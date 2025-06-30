@@ -1,6 +1,9 @@
 ﻿<?php
 /**
- * API REST para operações do plugin
+ * API REST personalizada para MKP Multisite WooCommerce
+ * 
+ * @package MKP_Multisite_Woo
+ * @since 1.0.0
  */
 
 if (!defined('ABSPATH')) {
@@ -9,558 +12,466 @@ if (!defined('ABSPATH')) {
 
 class MKP_REST_API {
     
-    private $subdomain_manager;
-    private $subscription_manager;
+    private $namespace = 'mkp/v1';
+    private $activity_logger;
     
-    public function __construct($subdomain_manager, $subscription_manager) {
-        $this->subdomain_manager = $subdomain_manager;
-        $this->subscription_manager = $subscription_manager;
-        
+    public function __construct() {
         add_action('rest_api_init', array($this, 'register_routes'));
+        $this->activity_logger = new MKP_Activity_Logger();
     }
     
     /**
      * Registrar rotas da API
      */
     public function register_routes() {
-        $namespace = 'mkp-multisite/v1';
-        
-        // Rota para listar sites
-        register_rest_route($namespace, '/sites', array(
-            'methods' => 'GET',
-            'callback' => array($this, 'get_sites'),
-            'permission_callback' => array($this, 'check_admin_permissions'),
-            'args' => array(
-                'status' => array(
-                    'description' => 'Filtrar por status',
-                    'type' => 'string',
-                    'enum' => array('active', 'suspended', 'archived')
-                ),
-                'user_id' => array(
-                    'description' => 'Filtrar por ID do usuário',
-                    'type' => 'integer'
-                ),
-                'per_page' => array(
-                    'description' => 'Número de sites por página',
-                    'type' => 'integer',
-                    'default' => 10
-                ),
-                'page' => array(
-                    'description' => 'Página atual',
-                    'type' => 'integer',
-                    'default' => 1
-                )
-            )
-        ));
-        
-        // Rota para criar site
-        register_rest_route($namespace, '/sites', array(
-            'methods' => 'POST',
-            'callback' => array($this, 'create_site'),
-            'permission_callback' => array($this, 'check_admin_permissions'),
-            'args' => array(
-                'user_id' => array(
-                    'required' => true,
-                    'description' => 'ID do usuário proprietário',
-                    'type' => 'integer'
-                ),
-                'subscription_id' => array(
-                    'required' => true,
-                    'description' => 'ID da assinatura',
-                    'type' => 'integer'
-                ),
-                'subdomain' => array(
-                    'description' => 'Nome do subdomínio (opcional)',
-                    'type' => 'string'
-                )
-            )
-        ));
-        
-        // Rota para gerenciar site específico
-        register_rest_route($namespace, '/sites/(?P<site_id>\d+)', array(
-            'methods' => 'GET',
-            'callback' => array($this, 'get_site'),
-            'permission_callback' => array($this, 'check_site_permissions'),
-            'args' => array(
-                'site_id' => array(
-                    'description' => 'ID do site',
-                    'type' => 'integer'
-                )
-            )
-        ));
-        
-        // Rota para atualizar site
-        register_rest_route($namespace, '/sites/(?P<site_id>\d+)', array(
-            'methods' => 'PUT',
-            'callback' => array($this, 'update_site'),
-            'permission_callback' => array($this, 'check_site_permissions'),
-            'args' => array(
-                'site_id' => array(
-                    'description' => 'ID do site',
-                    'type' => 'integer'
-                ),
-                'status' => array(
-                    'description' => 'Novo status do site',
-                    'type' => 'string',
-                    'enum' => array('active', 'suspended', 'archived')
-                ),
-                'page_limit' => array(
-                    'description' => 'Novo limite de páginas',
-                    'type' => 'integer'
-                )
-            )
-        ));
-        
-        // Rota para deletar site
-        register_rest_route($namespace, '/sites/(?P<site_id>\d+)', array(
-            'methods' => 'DELETE',
-            'callback' => array($this, 'delete_site'),
-            'permission_callback' => array($this, 'check_admin_permissions'),
-            'args' => array(
-                'site_id' => array(
-                    'description' => 'ID do site',
-                    'type' => 'integer'
-                ),
-                'backup' => array(
-                    'description' => 'Criar backup antes de deletar',
-                    'type' => 'boolean',
-                    'default' => true
-                )
-            )
-        ));
-        
-        // Rota para estatísticas
-        register_rest_route($namespace, '/stats', array(
-            'methods' => 'GET',
-            'callback' => array($this, 'get_stats'),
-            'permission_callback' => array($this, 'check_admin_permissions')
-        ));
-        
-        // Rota para logs
-        register_rest_route($namespace, '/logs', array(
-            'methods' => 'GET',
-            'callback' => array($this, 'get_logs'),
-            'permission_callback' => array($this, 'check_admin_permissions'),
-            'args' => array(
-                'action' => array(
-                    'description' => 'Filtrar por ação',
-                    'type' => 'string'
-                ),
-                'site_id' => array(
-                    'description' => 'Filtrar por site',
-                    'type' => 'integer'
-                ),
-                'user_id' => array(
-                    'description' => 'Filtrar por usuário',
-                    'type' => 'integer'
-                ),
-                'limit' => array(
-                    'description' => 'Número máximo de logs',
-                    'type' => 'integer',
-                    'default' => 50
-                )
-            )
-        ));
-        
-        // Rota para sincronização
-        register_rest_route($namespace, '/sync', array(
-            'methods' => 'POST',
-            'callback' => array($this, 'sync_subscriptions'),
-            'permission_callback' => array($this, 'check_admin_permissions')
-        ));
-        
-        // Rota para webhook (para integrações externas)
-        register_rest_route($namespace, '/webhook', array(
-            'methods' => 'POST',
-            'callback' => array($this, 'handle_webhook'),
-            'permission_callback' => array($this, 'verify_webhook'),
-            'args' => array(
-                'event' => array(
-                    'required' => true,
-                    'description' => 'Tipo de evento',
-                    'type' => 'string'
-                ),
-                'data' => array(
-                    'required' => true,
-                    'description' => 'Dados do evento',
-                    'type' => 'object'
-                )
-            )
-        ));
-        
-        // Rota para usuário atual
-        register_rest_route($namespace, '/user/sites', array(
+        // Rota para listar sites do usuário
+        register_rest_route($this->namespace, '/sites', array(
             'methods' => 'GET',
             'callback' => array($this, 'get_user_sites'),
             'permission_callback' => array($this, 'check_user_permissions')
         ));
         
-        // Rota para uso de recursos
-        register_rest_route($namespace, '/sites/(?P<site_id>\d+)/usage', array(
+        // Rota para criar novo site
+        register_rest_route($this->namespace, '/sites', array(
+            'methods' => 'POST',
+            'callback' => array($this, 'create_site'),
+            'permission_callback' => array($this, 'check_user_permissions'),
+            'args' => array(
+                'subscription_id' => array(
+                    'required' => true,
+                    'type' => 'integer'
+                ),
+                'site_name' => array(
+                    'required' => true,
+                    'type' => 'string'
+                ),
+                'plan' => array(
+                    'required' => false,
+                    'type' => 'string'
+                )
+            )
+        ));
+        
+        // Rota para obter estatísticas de um site
+        register_rest_route($this->namespace, '/sites/(?P<site_id>\d+)/stats', array(
             'methods' => 'GET',
-            'callback' => array($this, 'get_site_usage'),
+            'callback' => array($this, 'get_site_stats'),
             'permission_callback' => array($this, 'check_site_permissions'),
             'args' => array(
                 'site_id' => array(
-                    'description' => 'ID do site',
+                    'required' => true,
                     'type' => 'integer'
+                )
+            )
+        ));
+        
+        // Rota para atualizar status do site
+        register_rest_route($this->namespace, '/sites/(?P<site_id>\d+)/status', array(
+            'methods' => 'PUT',
+            'callback' => array($this, 'update_site_status'),
+            'permission_callback' => array($this, 'check_site_permissions'),
+            'args' => array(
+                'site_id' => array(
+                    'required' => true,
+                    'type' => 'integer'
+                ),
+                'status' => array(
+                    'required' => true,
+                    'type' => 'string',
+                    'enum' => array('active', 'suspended', 'pending_removal')
+                )
+            )
+        ));
+        
+        // Rota para sincronizar assinatura
+        register_rest_route($this->namespace, '/sync-subscription', array(
+            'methods' => 'POST',
+            'callback' => array($this, 'sync_subscription'),
+            'permission_callback' => array($this, 'check_admin_permissions'),
+            'args' => array(
+                'subscription_id' => array(
+                    'required' => true,
+                    'type' => 'integer'
+                )
+            )
+        ));
+        
+        // Webhook para WooCommerce
+        register_rest_route($this->namespace, '/webhook/subscription-updated', array(
+            'methods' => 'POST',
+            'callback' => array($this, 'handle_subscription_webhook'),
+            'permission_callback' => array($this, 'check_webhook_permissions')
+        ));
+        
+        // Endpoints para mobile
+        register_rest_route($this->namespace, '/mobile/dashboard', array(
+            'methods' => 'GET',
+            'callback' => array($this, 'get_mobile_dashboard'),
+            'permission_callback' => array($this, 'check_user_permissions')
+        ));
+        
+        register_rest_route($this->namespace, '/mobile/register-device', array(
+            'methods' => 'POST',
+            'callback' => array($this, 'register_mobile_device'),
+            'permission_callback' => array($this, 'check_user_permissions'),
+            'args' => array(
+                'device_token' => array(
+                    'required' => true,
+                    'type' => 'string'
+                ),
+                'platform' => array(
+                    'required' => true,
+                    'type' => 'string',
+                    'enum' => array('android', 'ios')
                 )
             )
         ));
     }
     
     /**
-     * Obter lista de sites
+     * Obter sites do usuário
      */
-    public function get_sites($request) {
-        $params = $request->get_params();
-        $subscriptions_with_sites = $this->subscription_manager->get_subscriptions_with_sites();
+    public function get_user_sites($request) {
+        $user_id = get_current_user_id();
         
-        // Aplicar filtros
-        if (isset($params['status'])) {
-            $subscriptions_with_sites = array_filter($subscriptions_with_sites, function($item) use ($params) {
-                return $item['status'] === $params['status'];
-            });
+        try {
+            // Buscar sites onde o usuário é proprietário
+            $sites = get_sites(array(
+                'meta_query' => array(
+                    array(
+                        'key' => '_mkp_subscription_id',
+                        'compare' => 'EXISTS'
+                    )
+                )
+            ));
+            
+            $user_sites = array();
+            
+            foreach ($sites as $site) {
+                $subscription_id = get_site_meta($site->blog_id, '_mkp_subscription_id', true);
+                
+                if ($subscription_id && function_exists('wcs_get_subscription')) {
+                    $subscription = wcs_get_subscription($subscription_id);
+                    
+                    if ($subscription && $subscription->get_user_id() == $user_id) {
+                        $site_details = get_blog_details($site->blog_id);
+                        $usage_stats = get_site_meta($site->blog_id, '_mkp_usage_stats', true);
+                        $plan_details = get_site_meta($site->blog_id, '_mkp_plan_details', true);
+                        
+                        $user_sites[] = array(
+                            'site_id' => $site->blog_id,
+                            'site_name' => $site_details->blogname,
+                            'site_url' => 'https://' . $site_details->domain . $site_details->path,
+                            'admin_url' => 'https://' . $site_details->domain . $site_details->path . 'wp-admin/',
+                            'status' => get_site_meta($site->blog_id, '_mkp_status', true) ?: 'active',
+                            'subscription_id' => $subscription_id,
+                            'subscription_status' => $subscription->get_status(),
+                            'usage_stats' => $usage_stats,
+                            'plan_details' => $plan_details,
+                            'created_date' => $site_details->registered
+                        );
+                    }
+                }
+            }
+            
+            return rest_ensure_response($user_sites);
+            
+        } catch (Exception $e) {
+            return new WP_Error('api_error', 'Erro ao obter sites: ' . $e->getMessage(), array('status' => 500));
         }
-        
-        if (isset($params['user_id'])) {
-            $subscriptions_with_sites = array_filter($subscriptions_with_sites, function($item) use ($params) {
-                return $item['user_id'] == $params['user_id'];
-            });
-        }
-        
-        // Paginação
-        $total = count($subscriptions_with_sites);
-        $per_page = $params['per_page'];
-        $page = $params['page'];
-        $offset = ($page - 1) * $per_page;
-        
-        $subscriptions_with_sites = array_slice($subscriptions_with_sites, $offset, $per_page);
-        
-        // Formatar resposta
-        $sites = array_map(function($item) {
-            return $this->format_site_response($item);
-        }, $subscriptions_with_sites);
-        
-        return rest_ensure_response(array(
-            'sites' => $sites,
-            'total' => $total,
-            'pages' => ceil($total / $per_page),
-            'current_page' => $page
-        ));
     }
     
     /**
      * Criar novo site
      */
     public function create_site($request) {
-        $params = $request->get_params();
+        $subscription_id = $request->get_param('subscription_id');
+        $site_name = sanitize_text_field($request->get_param('site_name'));
+        $plan = sanitize_text_field($request->get_param('plan'));
         
-        $user = get_user_by('id', $params['user_id']);
-        if (!$user) {
-            return new WP_Error('invalid_user', 'Usuário não encontrado', array('status' => 404));
-        }
-        
-        $subscription = wcs_get_subscription($params['subscription_id']);
-        if (!$subscription) {
-            return new WP_Error('invalid_subscription', 'Assinatura não encontrada', array('status' => 404));
-        }
-        
-        // Verificar se usuário já possui site
-        $existing_site = $this->subdomain_manager->get_user_site($params['user_id']);
-        if ($existing_site) {
-            return new WP_Error('site_exists', 'Usuário já possui um site', array('status' => 409));
-        }
-        
-        $site_id = $this->subdomain_manager->create_subdomain($params['user_id'], $subscription);
-        
-        if (!$site_id) {
-            return new WP_Error('creation_failed', 'Falha ao criar site', array('status' => 500));
-        }
-        
-        // Associar site à assinatura
-        $subscription->update_meta_data('_mkp_site_id', $site_id);
-        $subscription->save();
-        
-        $site_details = get_blog_details($site_id);
-        
-        return rest_ensure_response(array(
-            'success' => true,
-            'site_id' => $site_id,
-            'site_url' => $site_details->siteurl,
-            'site_name' => $site_details->blogname,
-            'message' => 'Site criado com sucesso'
-        ));
-    }
-    
-    /**
-     * Obter detalhes de um site específico
-     */
-    public function get_site($request) {
-        $site_id = $request['site_id'];
-        $site_details = get_blog_details($site_id);
-        
-        if (!$site_details) {
-            return new WP_Error('site_not_found', 'Site não encontrado', array('status' => 404));
-        }
-        
-        $config = $this->subdomain_manager->get_subdomain_config($site_id);
-        $usage = null;
-        
-        if (class_exists('MKP_Limiter_Integration')) {
-            $limiter = new MKP_Limiter_Integration(new MKP_Activity_Logger());
-            $usage = $limiter->get_site_usage($site_id);
-        }
-        
-        return rest_ensure_response(array(
-            'site_id' => $site_id,
-            'site_url' => $site_details->siteurl,
-            'site_name' => $site_details->blogname,
-            'status' => $this->subdomain_manager->get_site_status($site_id),
-            'config' => $config,
-            'usage' => $usage,
-            'created_at' => $site_details->registered,
-            'last_updated' => $site_details->last_updated
-        ));
-    }
-    
-    /**
-     * Atualizar site
-     */
-    public function update_site($request) {
-        $site_id = $request['site_id'];
-        $params = $request->get_params();
-        
-        $site_details = get_blog_details($site_id);
-        if (!$site_details) {
-            return new WP_Error('site_not_found', 'Site não encontrado', array('status' => 404));
-        }
-        
-        // Atualizar status se fornecido
-        if (isset($params['status'])) {
-            switch ($params['status']) {
-                case 'active':
-                    $this->subdomain_manager->activate_site($site_id);
-                    break;
-                case 'suspended':
-                    $this->subdomain_manager->suspend_site($site_id);
-                    break;
-                case 'archived':
-                    $this->subdomain_manager->archive_site($site_id);
-                    break;
+        try {
+            // Verificar se a assinatura existe e pertence ao usuário
+            if (!function_exists('wcs_get_subscription')) {
+                return new WP_Error('wcs_not_available', 'WooCommerce Subscriptions não está disponível', array('status' => 400));
             }
-        }
-        
-        // Atualizar limite de páginas se fornecido
-        if (isset($params['page_limit'])) {
-            $this->subdomain_manager->update_page_limit($site_id, $params['page_limit']);
-        }
-        
-        return rest_ensure_response(array(
-            'success' => true,
-            'message' => 'Site atualizado com sucesso'
-        ));
-    }
-    
-    /**
-     * Deletar site
-     */
-    public function delete_site($request) {
-        $site_id = $request['site_id'];
-        $create_backup = $request['backup'];
-        
-        $site_details = get_blog_details($site_id);
-        if (!$site_details) {
-            return new WP_Error('site_not_found', 'Site não encontrado', array('status' => 404));
-        }
-        
-        // Criar backup se solicitado
-        if ($create_backup && class_exists('MKP_Backup_Manager')) {
-            $backup_manager = new MKP_Backup_Manager();
-            $backup_manager->create_site_backup($site_id);
-        }
-        
-        // Deletar site
-        $result = wpmu_delete_blog($site_id, true);
-        
-        if (is_wp_error($result)) {
-            return new WP_Error('deletion_failed', $result->get_error_message(), array('status' => 500));
-        }
-        
-        return rest_ensure_response(array(
-            'success' => true,
-            'message' => 'Site deletado com sucesso'
-        ));
-    }
-    
-    /**
-     * Obter estatísticas
-     */
-    public function get_stats($request) {
-        $stats = $this->subscription_manager->get_subscription_stats();
-        
-        // Adicionar estatísticas adicionais
-        $stats['total_sites'] = get_blog_count();
-        $stats['active_sites'] = $this->count_sites_by_status('active');
-        $stats['suspended_sites'] = $this->count_sites_by_status('suspended');
-        
-        return rest_ensure_response($stats);
-    }
-    
-    /**
-     * Obter logs
-     */
-    public function get_logs($request) {
-        $params = $request->get_params();
-        $activity_logger = new MKP_Activity_Logger();
-        
-        $logs = $activity_logger->get_logs(
-            $params['limit'],
-            $params['action'] ?? null,
-            $params['site_id'] ?? null,
-            $params['user_id'] ?? null
-        );
-        
-        return rest_ensure_response(array(
-            'logs' => $logs,
-            'total' => count($logs)
-        ));
-    }
-    
-    /**
-     * Sincronizar assinaturas
-     */
-    public function sync_subscriptions($request) {
-        $synced = 0;
-        $errors = 0;
-        
-        $subscriptions = wcs_get_subscriptions();
-        
-        foreach ($subscriptions as $subscription) {
-            try {
-                // Lógica de sincronização aqui
-                $synced++;
-            } catch (Exception $e) {
-                $errors++;
+            
+            $subscription = wcs_get_subscription($subscription_id);
+            
+            if (!$subscription || $subscription->get_user_id() != get_current_user_id()) {
+                return new WP_Error('invalid_subscription', 'Assinatura inválida ou não pertence ao usuário', array('status' => 403));
             }
+            
+            // Verificar se já existe um site para esta assinatura
+            $existing_sites = get_sites(array(
+                'meta_key' => '_mkp_subscription_id',
+                'meta_value' => $subscription_id
+            ));
+            
+            if (!empty($existing_sites)) {
+                return new WP_Error('site_exists', 'Já existe um site para esta assinatura', array('status' => 400));
+            }
+            
+            // Criar site usando a classe principal
+            if (!class_exists('MKP_Multisite_Woo_Integrator')) {
+                return new WP_Error('integrator_not_available', 'Integrador não está disponível', array('status' => 500));
+            }
+            
+            // Simular ativação de assinatura para criar site
+            $integrator = new MKP_Multisite_Woo_Integrator();
+            $integrator->subscription_activated($subscription);
+            
+            // Buscar o site criado
+            $new_sites = get_sites(array(
+                'meta_key' => '_mkp_subscription_id',
+                'meta_value' => $subscription_id
+            ));
+            
+            if (empty($new_sites)) {
+                return new WP_Error('site_creation_failed', 'Falha ao criar site', array('status' => 500));
+            }
+            
+            $site = $new_sites[0];
+            $site_details = get_blog_details($site->blog_id);
+            
+            return rest_ensure_response(array(
+                'site_id' => $site->blog_id,
+                'site_name' => $site_details->blogname,
+                'site_url' => 'https://' . $site_details->domain . $site_details->path,
+                'admin_url' => 'https://' . $site_details->domain . $site_details->path . 'wp-admin/',
+                'status' => 'active',
+                'message' => 'Site criado com sucesso'
+            ));
+            
+        } catch (Exception $e) {
+            return new WP_Error('api_error', 'Erro ao criar site: ' . $e->getMessage(), array('status' => 500));
         }
-        
-        return rest_ensure_response(array(
-            'success' => true,
-            'synced' => $synced,
-            'errors' => $errors,
-            'message' => "Sincronização concluída. $synced assinaturas sincronizadas, $errors erros."
-        ));
     }
     
     /**
-     * Manipular webhook
+     * Obter estatísticas do site
      */
-    public function handle_webhook($request) {
-        $params = $request->get_params();
-        $event = $params['event'];
-        $data = $params['data'];
+    public function get_site_stats($request) {
+        $site_id = $request->get_param('site_id');
         
-        // Log do webhook
-        $activity_logger = new MKP_Activity_Logger();
-        $activity_logger->log(0, 0, 0, 'webhook_received', "Webhook recebido: $event");
-        
-        switch ($event) {
-            case 'subscription.activated':
-                // Processar ativação de assinatura
-                break;
-            case 'subscription.suspended':
-                // Processar suspensão de assinatura
-                break;
-            case 'payment.completed':
-                // Processar pagamento concluído
-                break;
-            default:
-                return new WP_Error('unknown_event', 'Evento não reconhecido', array('status' => 400));
-        }
-        
-        return rest_ensure_response(array(
-            'success' => true,
-            'message' => 'Webhook processado com sucesso'
-        ));
-    }
-    
-    /**
-     * Obter sites do usuário atual
-     */
-    public function get_user_sites($request) {
-        $user_id = get_current_user_id();
-        $sites = get_blogs_of_user($user_id);
-        
-        $formatted_sites = array();
-        foreach ($sites as $site) {
-            if ($site->userblog_id != 1) { // Excluir site principal
-                $config = $this->subdomain_manager->get_subdomain_config($site->userblog_id);
-                $formatted_sites[] = array(
-                    'site_id' => $site->userblog_id,
-                    'site_url' => $site->siteurl,
-                    'site_name' => $site->blogname,
-                    'status' => $this->subdomain_manager->get_site_status($site->userblog_id),
-                    'config' => $config
+        try {
+            $usage_stats = get_site_meta($site_id, '_mkp_usage_stats', true);
+            $plan_details = get_site_meta($site_id, '_mkp_plan_details', true);
+            $site_status = get_site_meta($site_id, '_mkp_status', true);
+            
+            // Calcular estatísticas em tempo real se necessário
+            if (!$usage_stats || !isset($usage_stats['last_updated']) || 
+                strtotime($usage_stats['last_updated']) < strtotime('-1 hour')) {
+                
+                switch_to_blog($site_id);
+                
+                $usage_stats = array(
+                    'pages_count' => wp_count_posts('page')->publish + wp_count_posts('post')->publish,
+                    'users_count' => count_users()['total_users'],
+                    'storage_used' => $this->calculate_site_storage($site_id),
+                    'last_updated' => current_time('mysql')
                 );
+                
+                update_site_meta($site_id, '_mkp_usage_stats', $usage_stats);
+                
+                restore_current_blog();
             }
+            
+            return rest_ensure_response(array(
+                'site_id' => $site_id,
+                'status' => $site_status ?: 'active',
+                'usage' => $usage_stats,
+                'limits' => $plan_details,
+                'usage_percentage' => $this->calculate_usage_percentage($usage_stats, $plan_details)
+            ));
+            
+        } catch (Exception $e) {
+            return new WP_Error('api_error', 'Erro ao obter estatísticas: ' . $e->getMessage(), array('status' => 500));
         }
-        
-        return rest_ensure_response(array(
-            'sites' => $formatted_sites,
-            'total' => count($formatted_sites)
-        ));
     }
     
     /**
-     * Obter uso de recursos do site
+     * Atualizar status do site
      */
-    public function get_site_usage($request) {
-        $site_id = $request['site_id'];
+    public function update_site_status($request) {
+        $site_id = $request->get_param('site_id');
+        $status = $request->get_param('status');
         
-        if (!get_blog_details($site_id)) {
-            return new WP_Error('site_not_found', 'Site não encontrado', array('status' => 404));
+        try {
+            update_site_meta($site_id, '_mkp_status', $status);
+            
+            // Log da mudança de status
+            $this->activity_logger->log(
+                $site_id,
+                get_site_meta($site_id, '_mkp_subscription_id', true),
+                get_current_user_id(),
+                'status_changed_via_api',
+                "Status alterado para: {$status}",
+                'info'
+            );
+            
+            return rest_ensure_response(array(
+                'site_id' => $site_id,
+                'status' => $status,
+                'message' => 'Status atualizado com sucesso'
+            ));
+            
+        } catch (Exception $e) {
+            return new WP_Error('api_error', 'Erro ao atualizar status: ' . $e->getMessage(), array('status' => 500));
         }
-        
-        $usage = array();
-        
-        if (class_exists('MKP_Limiter_Integration')) {
-            $limiter = new MKP_Limiter_Integration(new MKP_Activity_Logger());
-            $usage = $limiter->get_site_usage($site_id);
-        }
-        
-        return rest_ensure_response($usage);
     }
     
     /**
-     * Verificar permissões de administrador
+     * Sincronizar assinatura
      */
-    public function check_admin_permissions($request) {
-        return current_user_can('manage_network');
+    public function sync_subscription($request) {
+        $subscription_id = $request->get_param('subscription_id');
+        
+        try {
+            if (!function_exists('wcs_get_subscription')) {
+                return new WP_Error('wcs_not_available', 'WooCommerce Subscriptions não está disponível', array('status' => 400));
+            }
+            
+            $subscription = wcs_get_subscription($subscription_id);
+            
+            if (!$subscription) {
+                return new WP_Error('invalid_subscription', 'Assinatura não encontrada', array('status' => 404));
+            }
+            
+            // Executar sincronização
+            $integrator = new MKP_Multisite_Woo_Integrator();
+            
+            switch ($subscription->get_status()) {
+                case 'active':
+                    $integrator->subscription_activated($subscription);
+                    break;
+                case 'on-hold':
+                    $integrator->subscription_suspended($subscription);
+                    break;
+                case 'cancelled':
+                    $integrator->subscription_cancelled($subscription);
+                    break;
+            }
+            
+            return rest_ensure_response(array(
+                'subscription_id' => $subscription_id,
+                'status' => $subscription->get_status(),
+                'message' => 'Sincronização realizada com sucesso'
+            ));
+            
+        } catch (Exception $e) {
+            return new WP_Error('api_error', 'Erro na sincronização: ' . $e->getMessage(), array('status' => 500));
+        }
     }
     
     /**
-     * Verificar permissões de site
+     * Gerenciar webhook de assinatura
      */
-    public function check_site_permissions($request) {
-        $site_id = $request['site_id'];
+    public function handle_subscription_webhook($request) {
+        $data = $request->get_json_params();
         
-        // Super admin pode tudo
-        if (is_super_admin()) {
-            return true;
+        try {
+            if (!isset($data['subscription_id']) || !isset($data['status'])) {
+                return new WP_Error('invalid_webhook_data', 'Dados do webhook inválidos', array('status' => 400));
+            }
+            
+            $subscription_id = absint($data['subscription_id']);
+            $status = sanitize_text_field($data['status']);
+            
+            // Log do webhook recebido
+            $this->activity_logger->log(
+                0,
+                $subscription_id,
+                0,
+                'webhook_received',
+                "Webhook recebido para assinatura {$subscription_id} com status {$status}",
+                'info'
+            );
+            
+            // Processar webhook
+            $sync_result = $this->sync_subscription(new WP_REST_Request('POST', '', array('subscription_id' => $subscription_id)));
+            
+            if (is_wp_error($sync_result)) {
+                return $sync_result;
+            }
+            
+            return rest_ensure_response(array(
+                'subscription_id' => $subscription_id,
+                'processed' => true,
+                'message' => 'Webhook processado com sucesso'
+            ));
+            
+        } catch (Exception $e) {
+            return new WP_Error('webhook_error', 'Erro ao processar webhook: ' . $e->getMessage(), array('status' => 500));
         }
-        
-        // Proprietário do site pode visualizar/editar
+    }
+    
+    /**
+     * Dashboard mobile
+     */
+    public function get_mobile_dashboard($request) {
         $user_id = get_current_user_id();
-        $user_sites = get_blogs_of_user($user_id);
         
-        foreach ($user_sites as $site) {
-            if ($site->userblog_id == $site_id) {
-                return true;
-            }
+        try {
+            $sites_response = $this->get_user_sites($request);
+            $sites = $sites_response->get_data();
+            
+            $dashboard_data = array(
+                'user_info' => array(
+                    'id' => $user_id,
+                    'name' => wp_get_current_user()->display_name,
+                    'email' => wp_get_current_user()->user_email
+                ),
+                'site_stats' => array(
+                    'total_sites' => count($sites),
+                    'active_sites' => count(array_filter($sites, function($site) { return $site['status'] === 'active'; })),
+                    'suspended_sites' => count(array_filter($sites, function($site) { return $site['status'] === 'suspended'; }))
+                ),
+                'sites' => array_slice($sites, 0, 5), // Últimos 5 sites
+                'quick_actions' => array(
+                    array('action' => 'create_site', 'label' => 'Criar Novo Site', 'icon' => 'add'),
+                    array('action' => 'view_sites', 'label' => 'Ver Todos os Sites', 'icon' => 'list'),
+                    array('action' => 'account', 'label' => 'Minha Conta', 'icon' => 'person')
+                ),
+                'notifications' => $this->get_user_notifications($user_id)
+            );
+            
+            return rest_ensure_response($dashboard_data);
+            
+        } catch (Exception $e) {
+            return new WP_Error('api_error', 'Erro ao obter dashboard: ' . $e->getMessage(), array('status' => 500));
         }
+    }
+    
+    /**
+     * Registrar dispositivo móvel
+     */
+    public function register_mobile_device($request) {
+        $device_token = sanitize_text_field($request->get_param('device_token'));
+        $platform = sanitize_text_field($request->get_param('platform'));
+        $user_id = get_current_user_id();
         
-        return false;
+        try {
+            // Salvar token do dispositivo
+            $devices = get_user_meta($user_id, '_mkp_mobile_devices', true) ?: array();
+            
+            $devices[$device_token] = array(
+                'platform' => $platform,
+                'registered_at' => current_time('mysql'),
+                'active' => true
+            );
+            
+            update_user_meta($user_id, '_mkp_mobile_devices', $devices);
+            
+            return rest_ensure_response(array(
+                'device_token' => $device_token,
+                'platform' => $platform,
+                'registered' => true,
+                'message' => 'Dispositivo registrado com sucesso'
+            ));
+            
+        } catch (Exception $e) {
+            return new WP_Error('api_error', 'Erro ao registrar dispositivo: ' . $e->getMessage(), array('status' => 500));
+        }
     }
     
     /**
@@ -571,52 +482,112 @@ class MKP_REST_API {
     }
     
     /**
-     * Verificar webhook (implementar assinatura de segurança)
+     * Verificar permissões de site
      */
-    public function verify_webhook($request) {
-        // Implementar verificação de assinatura/token do webhook
-        $webhook_secret = get_option('mkp_webhook_secret', '');
-        
-        if (empty($webhook_secret)) {
-            return true; // Permitir se não há segredo configurado
+    public function check_site_permissions($request) {
+        if (!is_user_logged_in()) {
+            return false;
         }
         
-        $signature = $request->get_header('X-MKP-Signature');
-        $body = $request->get_body();
-        $expected_signature = hash_hmac('sha256', $body, $webhook_secret);
+        $site_id = $request->get_param('site_id');
+        $user_id = get_current_user_id();
         
-        return hash_equals($signature, $expected_signature);
+        // Super admin sempre pode acessar
+        if (is_super_admin()) {
+            return true;
+        }
+        
+        // Verificar se o usuário é proprietário do site
+        $subscription_id = get_site_meta($site_id, '_mkp_subscription_id', true);
+        
+        if ($subscription_id && function_exists('wcs_get_subscription')) {
+            $subscription = wcs_get_subscription($subscription_id);
+            return $subscription && $subscription->get_user_id() == $user_id;
+        }
+        
+        return false;
     }
     
     /**
-     * Formatar resposta do site
+     * Verificar permissões de admin
      */
-    private function format_site_response($item) {
-        return array(
-            'site_id' => $item['site_id'],
-            'site_url' => $item['site_details']->siteurl,
-            'site_name' => $item['site_details']->blogname,
-            'user_id' => $item['user_id'],
-            'subscription_id' => $item['subscription']->get_id(),
-            'status' => $item['status'],
-            'next_payment' => $item['next_payment'],
-            'total' => $item['total'],
-            'created_at' => $item['site_details']->registered,
-            'last_updated' => $item['site_details']->last_updated
-        );
+    public function check_admin_permissions($request) {
+        return current_user_can('manage_network');
     }
     
     /**
-     * Contar sites por status
+     * Verificar permissões de webhook
      */
-    private function count_sites_by_status($status) {
-        global $wpdb;
+    public function check_webhook_permissions($request) {
+        // Verificar se o webhook vem do WooCommerce
+        $signature = $request->get_header('X-WC-Webhook-Signature');
         
-        $table = $wpdb->base_prefix . 'mkp_subdomain_config';
+        if (!$signature) {
+            return false;
+        }
         
-        return $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM $table WHERE status = %s",
-            $status
-        ));
+        // Verificar assinatura do webhook (implementar validação específica se necessário)
+        return true;
+    }
+    
+    /**
+     * Calcular armazenamento do site
+     */
+    private function calculate_site_storage($site_id) {
+        $upload_dir = wp_upload_dir();
+        $storage_used = 0;
+        
+        if (is_dir($upload_dir['basedir'])) {
+            $storage_used = $this->get_directory_size($upload_dir['basedir']);
+        }
+        
+        return $storage_used;
+    }
+    
+    /**
+     * Obter tamanho de diretório
+     */
+    private function get_directory_size($directory) {
+        $size = 0;
+        
+        if (is_dir($directory)) {
+            foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($directory)) as $file) {
+                if ($file->isFile()) {
+                    $size += $file->getSize();
+                }
+            }
+        }
+        
+        return $size;
+    }
+    
+    /**
+     * Calcular porcentagem de uso
+     */
+    private function calculate_usage_percentage($usage, $limits) {
+        $percentages = array();
+        
+        if (isset($limits['page_limit']) && $limits['page_limit'] > 0) {
+            $percentages['pages'] = min(($usage['pages_count'] / $limits['page_limit']) * 100, 100);
+        }
+        
+        if (isset($limits['storage_limit']) && $limits['storage_limit'] > 0) {
+            $storage_limit_bytes = $limits['storage_limit'] * 1024 * 1024;
+            $percentages['storage'] = min(($usage['storage_used'] / $storage_limit_bytes) * 100, 100);
+        }
+        
+        if (isset($limits['user_limit']) && $limits['user_limit'] > 0) {
+            $percentages['users'] = min(($usage['users_count'] / $limits['user_limit']) * 100, 100);
+        }
+        
+        return $percentages;
+    }
+    
+    /**
+     * Obter notificações do usuário
+     */
+    private function get_user_notifications($user_id) {
+        // Implementar lógica para obter notificações específicas do usuário
+        return array();
     }
 }
