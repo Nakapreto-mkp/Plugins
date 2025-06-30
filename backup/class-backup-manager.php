@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 /**
  * Gerenciador de backups para sites WordPress Multisite
  */
