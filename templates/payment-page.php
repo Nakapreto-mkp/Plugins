@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 /**
  * Template para página de pagamento personalizada
  */
