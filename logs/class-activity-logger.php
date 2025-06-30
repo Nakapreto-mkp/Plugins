@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 /**
  * Sistema de logs de atividades
  */
