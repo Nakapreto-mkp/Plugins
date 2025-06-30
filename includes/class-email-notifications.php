@@ -1,6 +1,9 @@
 ﻿<?php
 /**
- * Gerenciador de notificações por email
+ * Sistema de notificações por email
+ * 
+ * @package MKP_Multisite_Woo
+ * @since 1.0.0
  */
 
 if (!defined('ABSPATH')) {
@@ -9,16 +12,37 @@ if (!defined('ABSPATH')) {
 
 class MKP_Email_Notifications {
     
-    public function __construct() {
-        // Configurar hooks para personalizar emails
-        add_filter('wp_mail_from', array($this, 'custom_mail_from'));
-        add_filter('wp_mail_from_name', array($this, 'custom_mail_from_name'));
+    private $activity_logger;
+    
+    public function __construct($activity_logger) {
+        $this->activity_logger = $activity_logger;
+        $this->init_hooks();
+    }
+    
+    /**
+     * Inicializar hooks
+     */
+    private function init_hooks() {
+        add_action('mkp_send_welcome_email', array($this, 'send_welcome_email'), 10, 3);
+        add_action('mkp_send_payment_reminder', array($this, 'send_payment_reminder'), 10, 2);
+        add_action('mkp_send_suspension_notice', array($this, 'send_suspension_notice'), 10, 3);
+        add_action('mkp_send_reactivation_notice', array($this, 'send_reactivation_notice'), 10, 2);
+        
+        // Configurar templates de email
+        add_filter('wp_mail_content_type', array($this, 'set_html_mail_content_type'));
+    }
+    
+    /**
+     * Definir tipo de conteúdo HTML para emails
+     */
+    public function set_html_mail_content_type() {
+        return 'text/html';
     }
     
     /**
      * Enviar email de boas-vindas
      */
-    public function send_welcome_email($user_id, $site_id) {
+    public function send_welcome_email($site_id, $user_id, $subscription_id) {
         $user = get_user_by('id', $user_id);
         $site_details = get_blog_details($site_id);
         
@@ -26,304 +50,397 @@ class MKP_Email_Notifications {
             return false;
         }
         
-        $subject = 'Bem-vindo! Seu novo site foi criado';
+        $site_url = 'https://' . $site_details->domain . $site_details->path;
+        $admin_url = $site_url . 'wp-admin/';
         
-        $message = $this->get_email_template('welcome', array(
-            'user_name' => $user->display_name,
-            'site_url' => $site_details->siteurl,
-            'site_name' => $site_details->blogname,
-            'admin_url' => $site_details->siteurl . '/wp-admin/',
-            'login_url' => wp_login_url($site_details->siteurl)
-        ));
-        
-        return $this->send_email($user->user_email, $subject, $message);
-    }
-    
-    /**
-     * Enviar email de reativação
-     */
-    public function send_reactivation_email($user_id, $site_id) {
-        $user = get_user_by('id', $user_id);
-        $site_details = get_blog_details($site_id);
-        
-        if (!$user || !$site_details) {
-            return false;
-        }
-        
-        $subject = 'Seu site foi reativado!';
-        
-        $message = $this->get_email_template('reactivation', array(
-            'user_name' => $user->display_name,
-            'site_url' => $site_details->siteurl,
-            'site_name' => $site_details->blogname
-        ));
-        
-        return $this->send_email($user->user_email, $subject, $message);
-    }
-    
-    /**
-     * Enviar email de suspensão
-     */
-    public function send_suspension_email($user_id, $site_id) {
-        $user = get_user_by('id', $user_id);
-        $site_details = get_blog_details($site_id);
-        
-        if (!$user || !$site_details) {
-            return false;
-        }
-        
-        // Obter informações da assinatura
-        $subscription_info = $this->get_subscription_info($site_id);
-        
-        $subject = 'Importante: Seu site foi temporariamente suspenso';
-        
-        $message = $this->get_email_template('suspension', array(
-            'user_name' => $user->display_name,
-            'site_url' => $site_details->siteurl,
-            'site_name' => $site_details->blogname,
-            'payment_url' => $subscription_info ? $subscription_info['payment_url'] : '',
-            'amount' => $subscription_info ? $subscription_info['total'] : '',
-            'due_date' => $subscription_info ? $subscription_info['next_payment'] : ''
-        ));
-        
-        return $this->send_email($user->user_email, $subject, $message);
-    }
-    
-    /**
-     * Enviar email de cancelamento
-     */
-    public function send_cancellation_email($user_id, $site_id) {
-        $user = get_user_by('id', $user_id);
-        $site_details = get_blog_details($site_id);
-        
-        if (!$user || !$site_details) {
-            return false;
-        }
-        
-        $subject = 'Seu site foi arquivado';
-        
-        $message = $this->get_email_template('cancellation', array(
-            'user_name' => $user->display_name,
-            'site_url' => $site_details->siteurl,
-            'site_name' => $site_details->blogname,
-            'support_email' => get_option('admin_email'),
-            'main_site_url' => get_site_url(1)
-        ));
-        
-        return $this->send_email($user->user_email, $subject, $message);
-    }
-    
-    /**
-     * Enviar email de lembrete de pagamento
-     */
-    public function send_payment_reminder($user_id, $site_id, $days_until_due = 3) {
-        $user = get_user_by('id', $user_id);
-        $site_details = get_blog_details($site_id);
-        
-        if (!$user || !$site_details) {
-            return false;
-        }
-        
-        $subscription_info = $this->get_subscription_info($site_id);
-        
-        $subject = "Lembrete: Pagamento vence em $days_until_due dias";
-        
-        $message = $this->get_email_template('payment_reminder', array(
+        $template_data = array(
             'user_name' => $user->display_name,
             'site_name' => $site_details->blogname,
-            'days_until_due' => $days_until_due,
-            'payment_url' => $subscription_info ? $subscription_info['payment_url'] : '',
-            'amount' => $subscription_info ? $subscription_info['total'] : '',
-            'due_date' => $subscription_info ? $subscription_info['next_payment'] : ''
-        ));
-        
-        return $this->send_email($user->user_email, $subject, $message);
-    }
-    
-    /**
-     * Obter template de email
-     */
-    private function get_email_template($template_name, $variables = array()) {
-        $templates = array(
-            'welcome' => '
-                <h2>Bem-vindo, {{user_name}}!</h2>
-                <p>Seu novo site foi criado com sucesso!</p>
-                
-                <h3>Detalhes do seu site:</h3>
-                <ul>
-                    <li><strong>Nome:</strong> {{site_name}}</li>
-                    <li><strong>URL:</strong> <a href="{{site_url}}">{{site_url}}</a></li>
-                    <li><strong>Painel Admin:</strong> <a href="{{admin_url}}">Acessar</a></li>
-                </ul>
-                
-                <p>Você pode começar a personalizar seu site imediatamente!</p>
-                
-                <p><a href="{{admin_url}}" style="background: #0073aa; color: white; padding: 10px 20px; text-decoration: none; border-radius: 3px;">Acessar Painel</a></p>
-                
-                <p>Em caso de dúvidas, não hesite em entrar em contato conosco.</p>
-            ',
-            
-            'reactivation' => '
-                <h2>Ótimas notícias, {{user_name}}!</h2>
-                <p>Seu site <strong>{{site_name}}</strong> foi reativado com sucesso!</p>
-                
-                <p>Você pode acessar seu site normalmente em: <a href="{{site_url}}">{{site_url}}</a></p>
-                
-                <p>Obrigado por manter sua assinatura em dia!</p>
-            ',
-            
-            'suspension' => '
-                <h2>Ação Necessária: Site Suspenso</h2>
-                <p>Olá {{user_name}},</p>
-                
-                <p>Infelizmente, seu site <strong>{{site_name}}</strong> foi temporariamente suspenso devido a um pagamento pendente.</p>
-                
-                <h3>Detalhes do Pagamento:</h3>
-                <ul>
-                    <li><strong>Valor:</strong> R$ {{amount}}</li>
-                    <li><strong>Vencimento:</strong> {{due_date}}</li>
-                </ul>
-                
-                <p>Para reativar seu site imediatamente, por favor efetue o pagamento:</p>
-                
-                <p><a href="{{payment_url}}" style="background: #e74c3c; color: white; padding: 10px 20px; text-decoration: none; border-radius: 3px;">Pagar Agora</a></p>
-                
-                <p>Seu site será reativado automaticamente assim que o pagamento for confirmado.</p>
-            ',
-            
-            'cancellation' => '
-                <h2>Site Arquivado</h2>
-                <p>Olá {{user_name}},</p>
-                
-                <p>Seu site <strong>{{site_name}}</strong> foi arquivado devido ao cancelamento da assinatura.</p>
-                
-                <p>Todos os seus dados foram preservados e podem ser restaurados caso você deseje renovar sua assinatura no futuro.</p>
-                
-                <p>Para renovar ou obter mais informações, visite nosso site principal: <a href="{{main_site_url}}">{{main_site_url}}</a></p>
-                
-                <p>Se você tiver alguma dúvida, entre em contato conosco em: {{support_email}}</p>
-                
-                <p>Obrigado por ter sido nosso cliente!</p>
-            ',
-            
-            'payment_reminder' => '
-                <h2>Lembrete de Pagamento</h2>
-                <p>Olá {{user_name}},</p>
-                
-                <p>Este é um lembrete amigável de que o pagamento do seu site <strong>{{site_name}}</strong> vence em {{days_until_due}} dias.</p>
-                
-                <h3>Detalhes:</h3>
-                <ul>
-                    <li><strong>Valor:</strong> R$ {{amount}}</li>
-                    <li><strong>Vencimento:</strong> {{due_date}}</li>
-                </ul>
-                
-                <p>Para evitar a suspensão do seu site, efetue o pagamento antes do vencimento:</p>
-                
-                <p><a href="{{payment_url}}" style="background: #27ae60; color: white; padding: 10px 20px; text-decoration: none; border-radius: 3px;">Pagar Agora</a></p>
-            '
+            'site_url' => $site_url,
+            'admin_url' => $admin_url,
+            'username' => $user->user_login,
+            'support_email' => 'suporte@' . DOMAIN_CURRENT_SITE
         );
         
-        if (!isset($templates[$template_name])) {
-            return 'Template não encontrado.';
-        }
+        $subject = $this->get_email_template('welcome', 'subject', $template_data);
+        $message = $this->get_email_template('welcome', 'body', $template_data);
         
-        $message = $templates[$template_name];
+        $sent = wp_mail($user->user_email, $subject, $message, $this->get_email_headers());
         
-        // Substituir variáveis
-        foreach ($variables as $key => $value) {
-            $message = str_replace('{{' . $key . '}}', $value, $message);
-        }
-        
-        // Aplicar template HTML básico
-        return $this->wrap_email_template($message);
-    }
-    
-    /**
-     * Envolver template de email em HTML
-     */
-    private function wrap_email_template($content) {
-        return '
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <title>MKP Multisite</title>
-            <style>
-                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-                h2 { color: #2c3e50; }
-                h3 { color: #34495e; }
-                ul { padding-left: 20px; }
-                li { margin-bottom: 5px; }
-                a { color: #3498db; }
-                .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; font-size: 12px; color: #888; }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                ' . $content . '
-                
-                <div class="footer">
-                    <p>Este é um email automático do sistema MKP Multisite. Por favor, não responda a este email.</p>
-                </div>
-            </div>
-        </body>
-        </html>';
-    }
-    
-    /**
-     * Enviar email
-     */
-    private function send_email($to, $subject, $message) {
-        $headers = array(
-            'Content-Type: text/html; charset=UTF-8',
-            'From: ' . $this->custom_mail_from_name() . ' <' . $this->custom_mail_from() . '>'
+        // Log do email enviado
+        $this->activity_logger->log(
+            $site_id,
+            $subscription_id,
+            $user_id,
+            'welcome_email_sent',
+            'Email de boas-vindas enviado para ' . $user->user_email,
+            $sent ? 'info' : 'error'
         );
         
-        return wp_mail($to, $subject, $message, $headers);
+        return $sent;
     }
     
     /**
-     * Customizar remetente
+     * Enviar lembrete de pagamento
      */
-    public function custom_mail_from($original_email_address) {
-        return get_option('mkp_email_from', $original_email_address);
-    }
-    
-    /**
-     * Customizar nome do remetente
-     */
-    public function custom_mail_from_name($original_email_from) {
-        return get_option('mkp_email_from_name', 'MKP Multisite');
-    }
-    
-    /**
-     * Obter informações da assinatura para email
-     */
-    private function get_subscription_info($site_id) {
-        global $wpdb;
-        
-        $table = $wpdb->base_prefix . 'mkp_subdomain_config';
-        $config = $wpdb->get_row($wpdb->prepare(
-            "SELECT subscription_id FROM $table WHERE site_id = %d",
-            $site_id
-        ));
-        
-        if (!$config) {
+    public function send_payment_reminder($subscription_id, $days_overdue = 0) {
+        if (!function_exists('wcs_get_subscription')) {
             return false;
         }
         
-        $subscription = wcs_get_subscription($config->subscription_id);
+        $subscription = wcs_get_subscription($subscription_id);
         
         if (!$subscription) {
             return false;
         }
         
-        return array(
-            'payment_url' => $subscription->get_checkout_payment_url(),
-            'total' => $subscription->get_total(),
-            'next_payment' => $subscription->get_date('next_payment') ? date('d/m/Y', strtotime($subscription->get_date('next_payment'))) : ''
+        $user = get_user_by('id', $subscription->get_user_id());
+        $site_id = $this->get_site_by_subscription($subscription_id);
+        
+        if (!$user || !$site_id) {
+            return false;
+        }
+        
+        $site_details = get_blog_details($site_id);
+        $payment_url = $subscription->get_checkout_payment_url();
+        
+        $template_data = array(
+            'user_name' => $user->display_name,
+            'site_name' => $site_details->blogname,
+            'amount_due' => $subscription->get_total(),
+            'currency' => $subscription->get_currency(),
+            'payment_url' => $payment_url,
+            'days_overdue' => $days_overdue,
+            'support_email' => 'suporte@' . DOMAIN_CURRENT_SITE
         );
+        
+        $subject = $this->get_email_template('payment_reminder', 'subject', $template_data);
+        $message = $this->get_email_template('payment_reminder', 'body', $template_data);
+        
+        $sent = wp_mail($user->user_email, $subject, $message, $this->get_email_headers());
+        
+        // Log do email enviado
+        $this->activity_logger->log(
+            $site_id,
+            $subscription_id,
+            $user->ID,
+            'payment_reminder_sent',
+            "Lembrete de pagamento enviado ({$days_overdue} dias em atraso)",
+            $sent ? 'info' : 'error'
+        );
+        
+        return $sent;
+    }
+    
+    /**
+     * Enviar aviso de suspensão
+     */
+    public function send_suspension_notice($site_id, $subscription_id, $reason = 'payment_due') {
+        $subscription = wcs_get_subscription($subscription_id);
+        
+        if (!$subscription) {
+            return false;
+        }
+        
+        $user = get_user_by('id', $subscription->get_user_id());
+        $site_details = get_blog_details($site_id);
+        
+        if (!$user || !$site_details) {
+            return false;
+        }
+        
+        $template_data = array(
+            'user_name' => $user->display_name,
+            'site_name' => $site_details->blogname,
+            'site_url' => 'https://' . $site_details->domain . $site_details->path,
+            'reason' => $reason,
+            'payment_url' => $subscription->get_checkout_payment_url(),
+            'support_email' => 'suporte@' . DOMAIN_CURRENT_SITE
+        );
+        
+        $subject = $this->get_email_template('suspension_notice', 'subject', $template_data);
+        $message = $this->get_email_template('suspension_notice', 'body', $template_data);
+        
+        $sent = wp_mail($user->user_email, $subject, $message, $this->get_email_headers());
+        
+        // Log do email enviado
+        $this->activity_logger->log(
+            $site_id,
+            $subscription_id,
+            $user->ID,
+            'suspension_notice_sent',
+            "Aviso de suspensão enviado (motivo: {$reason})",
+            $sent ? 'info' : 'error'
+        );
+        
+        return $sent;
+    }
+    
+    /**
+     * Enviar aviso de reativação
+     */
+    public function send_reactivation_notice($site_id, $subscription_id) {
+        $subscription = wcs_get_subscription($subscription_id);
+        
+        if (!$subscription) {
+            return false;
+        }
+        
+        $user = get_user_by('id', $subscription->get_user_id());
+        $site_details = get_blog_details($site_id);
+        
+        if (!$user || !$site_details) {
+            return false;
+        }
+        
+        $template_data = array(
+            'user_name' => $user->display_name,
+            'site_name' => $site_details->blogname,
+            'site_url' => 'https://' . $site_details->domain . $site_details->path,
+            'admin_url' => 'https://' . $site_details->domain . $site_details->path . 'wp-admin/',
+            'support_email' => 'suporte@' . DOMAIN_CURRENT_SITE
+        );
+        
+        $subject = $this->get_email_template('reactivation_notice', 'subject', $template_data);
+        $message = $this->get_email_template('reactivation_notice', 'body', $template_data);
+        
+        $sent = wp_mail($user->user_email, $subject, $message, $this->get_email_headers());
+        
+        // Log do email enviado
+        $this->activity_logger->log(
+            $site_id,
+            $subscription_id,
+            $user->ID,
+            'reactivation_notice_sent',
+            'Aviso de reativação enviado',
+            $sent ? 'info' : 'error'
+        );
+        
+        return $sent;
+    }
+    
+    /**
+     * Obter template de email
+     */
+    private function get_email_template($template_type, $part, $data) {
+        $templates = $this->get_email_templates();
+        
+        if (!isset($templates[$template_type][$part])) {
+            return '';
+        }
+        
+        $template = $templates[$template_type][$part];
+        
+        // Substituir variáveis no template
+        foreach ($data as $key => $value) {
+            $template = str_replace('{' . $key . '}', $value, $template);
+        }
+        
+        return $template;
+    }
+    
+    /**
+     * Definir templates de email
+     */
+    private function get_email_templates() {
+        $templates = array(
+            'welcome' => array(
+                'subject' => 'Seu novo site {site_name} está pronto!',
+                'body' => '
+                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center;">
+                            <h1 style="color: white; margin: 0;">🎉 Bem-vindo!</h1>
+                        </div>
+                        
+                        <div style="padding: 30px; background: white;">
+                            <h2 style="color: #333;">Olá {user_name},</h2>
+                            
+                            <p style="font-size: 16px; line-height: 1.6; color: #666;">
+                                Seu site foi criado com sucesso! Agora você pode começar a criar conteúdo incrível.
+                            </p>
+                            
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                                <h3 style="color: #333; margin-top: 0;">📋 Detalhes do seu site:</h3>
+                                <ul style="list-style: none; padding: 0;">
+                                    <li style="margin: 10px 0;"><strong>🌐 URL do site:</strong> <a href="{site_url}" style="color: #007cba;">{site_url}</a></li>
+                                    <li style="margin: 10px 0;"><strong>🔐 Painel Admin:</strong> <a href="{admin_url}" style="color: #007cba;">{admin_url}</a></li>
+                                    <li style="margin: 10px 0;"><strong>👤 Usuário:</strong> {username}</li>
+                                </ul>
+                            </div>
+                            
+                            <div style="text-align: center; margin: 30px 0;">
+                                <a href="{site_url}" style="background: #007cba; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">
+                                    🚀 Acessar Meu Site
+                                </a>
+                            </div>
+                            
+                            <div style="background: #e8f4f8; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                                <p style="margin: 0; color: #31708f;">
+                                    <strong>💡 Dica:</strong> Comece criando algumas páginas e personalizando o visual do seu site!
+                                </p>
+                            </div>
+                        </div>
+                        
+                        <div style="background: #f1f1f1; padding: 20px; text-align: center; color: #666; font-size: 14px;">
+                            <p>Precisa de ajuda? Entre em contato: <a href="mailto:{support_email}" style="color: #007cba;">{support_email}</a></p>
+                        </div>
+                    </div>
+                '
+            ),
+            
+            'payment_reminder' => array(
+                'subject' => 'Pagamento pendente - {site_name}',
+                'body' => '
+                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                        <div style="background: #ff6b6b; padding: 30px; text-align: center;">
+                            <h1 style="color: white; margin: 0;">⚠️ Pagamento Pendente</h1>
+                        </div>
+                        
+                        <div style="padding: 30px; background: white;">
+                            <h2 style="color: #333;">Olá {user_name},</h2>
+                            
+                            <p style="font-size: 16px; line-height: 1.6; color: #666;">
+                                Sua assinatura do site <strong>{site_name}</strong> tem um pagamento pendente.
+                            </p>
+                            
+                            <div style="background: #fff3cd; border: 1px solid #ffeaa7; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                                <h3 style="color: #856404; margin-top: 0;">📋 Detalhes do pagamento:</h3>
+                                <ul style="list-style: none; padding: 0;">
+                                    <li style="margin: 10px 0;"><strong>💰 Valor:</strong> {currency} {amount_due}</li>
+                                    <li style="margin: 10px 0;"><strong>📅 Dias em atraso:</strong> {days_overdue} dias</li>
+                                    <li style="margin: 10px 0;"><strong>🌐 Site:</strong> {site_name}</li>
+                                </ul>
+                            </div>
+                            
+                            <div style="text-align: center; margin: 30px 0;">
+                                <a href="{payment_url}" style="background: #28a745; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">
+                                    💳 Efetuar Pagamento
+                                </a>
+                            </div>
+                            
+                            <div style="background: #f8d7da; border: 1px solid #f5c6cb; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                                <p style="margin: 0; color: #721c24;">
+                                    <strong>⚠️ Importante:</strong> Após 7 dias sem pagamento, seu site será suspenso temporariamente.
+                                </p>
+                            </div>
+                        </div>
+                        
+                        <div style="background: #f1f1f1; padding: 20px; text-align: center; color: #666; font-size: 14px;">
+                            <p>Dúvidas? Entre em contato: <a href="mailto:{support_email}" style="color: #007cba;">{support_email}</a></p>
+                        </div>
+                    </div>
+                '
+            ),
+            
+            'suspension_notice' => array(
+                'subject' => 'Site {site_name} foi suspenso',
+                'body' => '
+                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                        <div style="background: #dc3545; padding: 30px; text-align: center;">
+                            <h1 style="color: white; margin: 0;">⏸️ Site Suspenso</h1>
+                        </div>
+                        
+                        <div style="padding: 30px; background: white;">
+                            <h2 style="color: #333;">Olá {user_name},</h2>
+                            
+                            <p style="font-size: 16px; line-height: 1.6; color: #666;">
+                                Infelizmente, seu site <strong>{site_name}</strong> foi temporariamente suspenso.
+                            </p>
+                            
+                            <div style="background: #f8d7da; border: 1px solid #f5c6cb; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                                <h3 style="color: #721c24; margin-top: 0;">📋 Informações:</h3>
+                                <ul style="list-style: none; padding: 0;">
+                                    <li style="margin: 10px 0;"><strong>🌐 Site:</strong> {site_name}</li>
+                                    <li style="margin: 10px 0;"><strong>📍 URL:</strong> {site_url}</li>
+                                    <li style="margin: 10px 0;"><strong>❓ Motivo:</strong> Pagamento em atraso</li>
+                                </ul>
+                            </div>
+                            
+                            <p style="font-size: 16px; line-height: 1.6; color: #666;">
+                                Para reativar seu site, efetue o pagamento pendente clicando no botão abaixo:
+                            </p>
+                            
+                            <div style="text-align: center; margin: 30px 0;">
+                                <a href="{payment_url}" style="background: #28a745; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">
+                                    💳 Reativar Site
+                                </a>
+                            </div>
+                        </div>
+                        
+                        <div style="background: #f1f1f1; padding: 20px; text-align: center; color: #666; font-size: 14px;">
+                            <p>Precisa de ajuda? Entre em contato: <a href="mailto:{support_email}" style="color: #007cba;">{support_email}</a></p>
+                        </div>
+                    </div>
+                '
+            ),
+            
+            'reactivation_notice' => array(
+                'subject' => 'Site {site_name} foi reativado!',
+                'body' => '
+                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                        <div style="background: #28a745; padding: 30px; text-align: center;">
+                            <h1 style="color: white; margin: 0;">✅ Site Reativado!</h1>
+                        </div>
+                        
+                        <div style="padding: 30px; background: white;">
+                            <h2 style="color: #333;">Olá {user_name},</h2>
+                            
+                            <p style="font-size: 16px; line-height: 1.6; color: #666;">
+                                Ótimas notícias! Seu site <strong>{site_name}</strong> foi reativado com sucesso.
+                            </p>
+                            
+                            <div style="background: #d4edda; border: 1px solid #c3e6cb; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                                <h3 style="color: #155724; margin-top: 0;">🎉 Seu site está online novamente!</h3>
+                                <ul style="list-style: none; padding: 0;">
+                                    <li style="margin: 10px 0;"><strong>🌐 Acesse:</strong> <a href="{site_url}" style="color: #007cba;">{site_url}</a></li>
+                                    <li style="margin: 10px 0;"><strong>🔐 Admin:</strong> <a href="{admin_url}" style="color: #007cba;">{admin_url}</a></li>
+                                </ul>
+                            </div>
+                            
+                            <div style="text-align: center; margin: 30px 0;">
+                                <a href="{site_url}" style="background: #007cba; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">
+                                    🚀 Acessar Meu Site
+                                </a>
+                            </div>
+                            
+                            <p style="font-size: 16px; line-height: 1.6; color: #666;">
+                                Obrigado por manter sua assinatura em dia. Continue criando conteúdo incrível!
+                            </p>
+                        </div>
+                        
+                        <div style="background: #f1f1f1; padding: 20px; text-align: center; color: #666; font-size: 14px;">
+                            <p>Dúvidas? Entre em contato: <a href="mailto:{support_email}" style="color: #007cba;">{support_email}</a></p>
+                        </div>
+                    </div>
+                '
+            )
+        );
+        
+        // Permitir personalização via filtros
+        return apply_filters('mkp_email_templates', $templates);
+    }
+    
+    /**
+     * Obter headers padrão para emails
+     */
+    private function get_email_headers() {
+        $headers = array();
+        $headers[] = 'Content-Type: text/html; charset=UTF-8';
+        $headers[] = 'From: ' . get_bloginfo('name') . ' <noreply@' . DOMAIN_CURRENT_SITE . '>';
+        
+        return apply_filters('mkp_email_headers', $headers);
+    }
+    
+    /**
+     * Obter site por ID da assinatura
+     */
+    private function get_site_by_subscription($subscription_id) {
+        $sites = get_sites(array(
+            'meta_key' => '_mkp_subscription_id',
+            'meta_value' => $subscription_id,
+            'number' => 1
+        ));
+        
+        return !empty($sites) ? $sites[0]->blog_id : false;
     }
 }

@@ -1,6 +1,9 @@
 ﻿<?php
 /**
- * Integração com plugin Limiter MKP Pro
+ * Integração com sistema de limites MKP
+ * 
+ * @package MKP_Multisite_Woo
+ * @since 1.0.0
  */
 
 if (!defined('ABSPATH')) {
@@ -13,347 +16,496 @@ class MKP_Limiter_Integration {
     
     public function __construct($activity_logger) {
         $this->activity_logger = $activity_logger;
-        
-        // Hooks para monitorar criação/exclusão de páginas
-        add_action('wp_insert_post', array($this, 'track_page_creation'), 10, 3);
-        add_action('before_delete_post', array($this, 'track_page_deletion'), 10, 1);
+        $this->init_hooks();
     }
     
     /**
-     * Configurar limites do site baseado na assinatura
+     * Inicializar hooks para limitações
      */
-    public function setup_site_limits($site_id, $subscription) {
-        // Obter detalhes do plano
-        $plan_details = $this->get_plan_details($subscription);
+    private function init_hooks() {
+        // Hooks para páginas/posts
+        add_action('wp_insert_post', array($this, 'check_page_limit'), 10, 3);
+        add_action('before_delete_post', array($this, 'update_page_count_on_delete'));
         
-        switch_to_blog($site_id);
+        // Hooks para uploads
+        add_filter('wp_handle_upload_prefilter', array($this, 'check_storage_limit'));
+        add_action('delete_attachment', array($this, 'update_storage_on_delete'));
         
-        // Configurar Limiter MKP Pro se estiver ativo
-        if (class_exists('Limiter_MKP_Pro')) {
-            $this->configure_limiter_pro($plan_details);
-        }
+        // Hooks para usuários
+        add_action('add_user_to_blog', array($this, 'check_user_limit'), 10, 3);
         
-        // Atualizar configuração na nossa tabela
-        global $wpdb;
-        $table = $wpdb->base_prefix . 'mkp_subdomain_config';
+        // Hooks para plugins/temas
+        add_filter('user_can', array($this, 'limit_plugin_theme_access'), 10, 4);
         
-        $wpdb->update(
-            $table,
-            array(
-                'page_limit' => $plan_details['page_limit'],
-                'updated_at' => current_time('mysql')
-            ),
-            array('site_id' => $site_id),
-            array('%d', '%s'),
-            array('%d')
-        );
+        // Dashboard customizado
+        add_action('wp_dashboard_setup', array($this, 'setup_usage_dashboard'));
         
-        restore_current_blog();
-        
-        $this->activity_logger->log($site_id, $subscription->get_id(), $subscription->get_user_id(), 'limits_configured', 
-            'Limites configurados - Páginas: ' . $plan_details['page_limit']);
+        // Avisos de limite
+        add_action('admin_notices', array($this, 'display_limit_warnings'));
     }
     
     /**
-     * Atualizar limites do site
+     * Verificar limite de páginas ao criar nova página/post
      */
-    public function update_site_limits($site_id, $subscription) {
-        $plan_details = $this->get_plan_details($subscription);
-        
-        switch_to_blog($site_id);
-        
-        if (class_exists('Limiter_MKP_Pro')) {
-            $this->configure_limiter_pro($plan_details);
-        }
-        
-        // Atualizar nossa configuração
-        global $wpdb;
-        $table = $wpdb->base_prefix . 'mkp_subdomain_config';
-        
-        $wpdb->update(
-            $table,
-            array(
-                'page_limit' => $plan_details['page_limit'],
-                'updated_at' => current_time('mysql')
-            ),
-            array('site_id' => $site_id),
-            array('%d', '%s'),
-            array('%d')
-        );
-        
-        restore_current_blog();
-        
-        $this->activity_logger->log($site_id, $subscription->get_id(), $subscription->get_user_id(), 'limits_updated', 
-            'Limites atualizados - Páginas: ' . $plan_details['page_limit']);
-    }
-    
-    /**
-     * Configurar Limiter MKP Pro
-     */
-    private function configure_limiter_pro($plan_details) {
-        // Assumindo que o Limiter MKP Pro tem estas opções
-        update_option('limiter_mkp_page_limit', $plan_details['page_limit']);
-        update_option('limiter_mkp_post_limit', $plan_details['post_limit'] ?? 50);
-        update_option('limiter_mkp_storage_limit', $plan_details['storage_limit'] ?? 1024);
-        update_option('limiter_mkp_enabled', true);
-        
-        // Configurar recursos específicos
-        if (isset($plan_details['features'])) {
-            foreach ($plan_details['features'] as $feature => $enabled) {
-                update_option('limiter_mkp_feature_' . $feature, $enabled);
-            }
-        }
-    }
-    
-    /**
-     * Obter detalhes do plano da assinatura
-     */
-    private function get_plan_details($subscription) {
-        $plan_details = array(
-            'page_limit' => 10,
-            'post_limit' => 50,
-            'storage_limit' => 1024, // MB
-            'features' => array()
-        );
-        
-        foreach ($subscription->get_items() as $item) {
-            $product = $item->get_product();
-            
-            if ($product) {
-                // Obter limites específicos do produto
-                $page_limit = $product->get_meta('_mkp_page_limit');
-                if ($page_limit) {
-                    $plan_details['page_limit'] = intval($page_limit);
-                }
-                
-                $post_limit = $product->get_meta('_mkp_post_limit');
-                if ($post_limit) {
-                    $plan_details['post_limit'] = intval($post_limit);
-                }
-                
-                $storage_limit = $product->get_meta('_mkp_storage_limit');
-                if ($storage_limit) {
-                    $plan_details['storage_limit'] = intval($storage_limit);
-                }
-                
-                // Recursos adicionais
-                $features = $product->get_meta('_mkp_features');
-                if ($features) {
-                    $plan_details['features'] = maybe_unserialize($features);
-                }
-                
-                // Detectar plano baseado no nome/categoria
-                $this->detect_plan_by_product($product, $plan_details);
-            }
-        }
-        
-        return $plan_details;
-    }
-    
-    /**
-     * Detectar plano baseado no produto
-     */
-    private function detect_plan_by_product($product, &$plan_details) {
-        $product_name = strtolower($product->get_name());
-        
-        // Planos básicos
-        if (strpos($product_name, 'básico') !== false || strpos($product_name, 'starter') !== false) {
-            $plan_details['page_limit'] = 5;
-            $plan_details['post_limit'] = 20;
-            $plan_details['storage_limit'] = 512;
-        }
-        
-        // Planos profissionais
-        elseif (strpos($product_name, 'profissional') !== false || strpos($product_name, 'pro') !== false) {
-            $plan_details['page_limit'] = 25;
-            $plan_details['post_limit'] = 100;
-            $plan_details['storage_limit'] = 2048;
-            $plan_details['features']['custom_css'] = true;
-            $plan_details['features']['advanced_widgets'] = true;
-        }
-        
-        // Planos premium/empresariais
-        elseif (strpos($product_name, 'premium') !== false || strpos($product_name, 'empresarial') !== false) {
-            $plan_details['page_limit'] = 100;
-            $plan_details['post_limit'] = 500;
-            $plan_details['storage_limit'] = 5120;
-            $plan_details['features']['custom_css'] = true;
-            $plan_details['features']['advanced_widgets'] = true;
-            $plan_details['features']['custom_plugins'] = true;
-            $plan_details['features']['priority_support'] = true;
-        }
-    }
-    
-    /**
-     * Rastrear criação de páginas
-     */
-    public function track_page_creation($post_id, $post, $update) {
-        // Só rastrear se não for update e for página
-        if ($update || $post->post_type !== 'page' || $post->post_status !== 'publish') {
+    public function check_page_limit($post_id, $post, $update) {
+        // Só verificar em sites gerenciados pelo plugin
+        if (!$this->is_managed_site()) {
             return;
         }
         
-        // Verificar se estamos em um subsite
-        $site_id = get_current_blog_id();
-        if ($site_id == 1) {
-            return; // Site principal
+        // Ignorar revisões e posts automáticos
+        if (wp_is_post_revision($post_id) || $post->post_status === 'auto-draft') {
+            return;
         }
         
-        // Atualizar contagem de páginas
-        $this->update_page_count($site_id);
-        
-        // Verificar se excedeu o limite
-        $this->check_page_limit($site_id, $post_id);
-    }
-    
-    /**
-     * Rastrear exclusão de páginas
-     */
-    public function track_page_deletion($post_id) {
-        $post = get_post($post_id);
-        
-        if ($post && $post->post_type === 'page' && $post->post_status === 'publish') {
-            $site_id = get_current_blog_id();
-            
-            if ($site_id != 1) {
-                // Atualizar contagem após exclusão
-                wp_schedule_single_event(time() + 5, 'mkp_update_page_count_after_deletion', array($site_id));
-            }
+        // Só contar posts publicados
+        if ($post->post_status !== 'publish') {
+            return;
         }
-    }
-    
-    /**
-     * Atualizar contagem de páginas
-     */
-    private function update_page_count($site_id) {
-        // Contar páginas publicadas
-        $page_count = wp_count_posts('page');
-        $current_pages = intval($page_count->publish);
         
-        // Atualizar na nossa tabela
-        global $wpdb;
-        $table = $wpdb->base_prefix . 'mkp_subdomain_config';
+        $limits = $this->get_site_limits();
+        $current_count = $this->count_published_content();
         
-        $wpdb->update(
-            $table,
-            array('current_pages' => $current_pages, 'updated_at' => current_time('mysql')),
-            array('site_id' => $site_id),
-            array('%d', '%s'),
-            array('%d')
-        );
-        
-        return $current_pages;
-    }
-    
-    /**
-     * Verificar limite de páginas
-     */
-    private function check_page_limit($site_id, $post_id) {
-        global $wpdb;
-        
-        $table = $wpdb->base_prefix . 'mkp_subdomain_config';
-        $config = $wpdb->get_row($wpdb->prepare(
-            "SELECT page_limit, current_pages FROM $table WHERE site_id = %d",
-            $site_id
-        ));
-        
-        if ($config && $config->current_pages > $config->page_limit) {
-            // Limite excedido - reverter para rascunho
+        if ($limits['page_limit'] > 0 && $current_count > $limits['page_limit']) {
+            // Reverter para rascunho se excedeu o limite
             wp_update_post(array(
                 'ID' => $post_id,
                 'post_status' => 'draft'
             ));
             
-            // Adicionar mensagem de erro
-            add_action('admin_notices', function() use ($config) {
-                echo '<div class="notice notice-error"><p>';
-                printf(
-                    __('Limite de páginas excedido! Seu plano permite %d páginas, mas você tem %d. A página foi salva como rascunho.', 'mkp-multisite-woo'),
-                    $config->page_limit,
-                    $config->current_pages
-                );
-                echo '</p></div>';
-            });
+            // Log do limite excedido
+            $this->activity_logger->log(
+                get_current_blog_id(),
+                $this->get_site_subscription_id(),
+                get_current_user_id(),
+                'page_limit_exceeded',
+                "Tentativa de publicar excedeu limite de {$limits['page_limit']} páginas",
+                'warning'
+            );
             
-            // Log do evento
-            $this->activity_logger->log($site_id, 0, get_current_user_id(), 'page_limit_exceeded', 
-                "Limite excedido: {$config->current_pages}/{$config->page_limit}");
+            // Adicionar aviso na sessão
+            add_filter('redirect_post_location', function($location) use ($limits) {
+                return add_query_arg('mkp_limit_exceeded', 'pages', $location);
+            });
         }
     }
     
     /**
-     * Verificar se usuário pode criar mais páginas
+     * Atualizar contagem ao deletar post
      */
-    public function can_create_page($site_id) {
-        global $wpdb;
-        
-        $table = $wpdb->base_prefix . 'mkp_subdomain_config';
-        $config = $wpdb->get_row($wpdb->prepare(
-            "SELECT page_limit, current_pages FROM $table WHERE site_id = %d",
-            $site_id
-        ));
-        
-        if (!$config) {
-            return true; // Se não há configuração, permitir
+    public function update_page_count_on_delete($post_id) {
+        if (!$this->is_managed_site()) {
+            return;
         }
         
-        return $config->current_pages < $config->page_limit;
+        $post = get_post($post_id);
+        if ($post && $post->post_status === 'publish') {
+            // Atualizar estatísticas de uso
+            $this->update_usage_stats();
+        }
     }
     
     /**
-     * Obter informações de uso do site
+     * Verificar limite de armazenamento no upload
      */
-    public function get_site_usage($site_id) {
-        global $wpdb;
+    public function check_storage_limit($file) {
+        if (!$this->is_managed_site()) {
+            return $file;
+        }
         
-        switch_to_blog($site_id);
+        $limits = $this->get_site_limits();
+        $current_storage = $this->get_current_storage_usage();
+        $file_size = $file['size'];
         
-        // Contagem de posts e páginas
-        $page_count = wp_count_posts('page');
-        $post_count = wp_count_posts('post');
+        // Converter limite para bytes
+        $storage_limit_bytes = $limits['storage_limit'] * 1024 * 1024; // MB para bytes
         
-        // Obter configurações
-        $table = $wpdb->base_prefix . 'mkp_subdomain_config';
-        $config = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM $table WHERE site_id = %d",
-            $site_id
-        ));
+        if ($storage_limit_bytes > 0 && ($current_storage + $file_size) > $storage_limit_bytes) {
+            $file['error'] = sprintf(
+                'Limite de armazenamento excedido. Limite: %s MB, Usado: %s MB, Arquivo: %s MB',
+                $limits['storage_limit'],
+                round($current_storage / 1024 / 1024, 2),
+                round($file_size / 1024 / 1024, 2)
+            );
+            
+            // Log do limite excedido
+            $this->activity_logger->log(
+                get_current_blog_id(),
+                $this->get_site_subscription_id(),
+                get_current_user_id(),
+                'storage_limit_exceeded',
+                "Tentativa de upload excedeu limite de {$limits['storage_limit']} MB",
+                'warning'
+            );
+        }
         
-        restore_current_blog();
+        return $file;
+    }
+    
+    /**
+     * Atualizar armazenamento ao deletar anexo
+     */
+    public function update_storage_on_delete($attachment_id) {
+        if (!$this->is_managed_site()) {
+            return;
+        }
         
-        $usage = array(
-            'pages' => array(
-                'current' => intval($page_count->publish),
-                'limit' => $config ? $config->page_limit : 10,
-                'percentage' => $config ? round(($page_count->publish / $config->page_limit) * 100, 2) : 0
-            ),
-            'posts' => array(
-                'current' => intval($post_count->publish),
-                'limit' => 50, // Padrão
-                'percentage' => round(($post_count->publish / 50) * 100, 2)
-            )
+        // Atualizar estatísticas após delete
+        wp_schedule_single_event(time() + 60, 'mkp_update_storage_stats', array(get_current_blog_id()));
+    }
+    
+    /**
+     * Verificar limite de usuários
+     */
+    public function check_user_limit($user_id, $role, $blog_id) {
+        if (!$this->is_managed_site($blog_id)) {
+            return;
+        }
+        
+        $limits = $this->get_site_limits($blog_id);
+        $current_users = count_users()['total_users'];
+        
+        if ($limits['user_limit'] > 0 && $current_users > $limits['user_limit']) {
+            // Remover usuário se excedeu limite
+            remove_user_from_blog($user_id, $blog_id);
+            
+            // Log do limite excedido
+            $this->activity_logger->log(
+                $blog_id,
+                $this->get_site_subscription_id($blog_id),
+                $user_id,
+                'user_limit_exceeded',
+                "Tentativa de adicionar usuário excedeu limite de {$limits['user_limit']} usuários",
+                'warning'
+            );
+            
+            // Retornar erro
+            wp_die('Limite de usuários excedido para este site.');
+        }
+    }
+    
+    /**
+     * Limitar acesso a plugins e temas baseado no plano
+     */
+    public function limit_plugin_theme_access($allcaps, $caps, $args, $user) {
+        if (!$this->is_managed_site()) {
+            return $allcaps;
+        }
+        
+        $limits = $this->get_site_limits();
+        $features = isset($limits['features']) ? $limits['features'] : array();
+        
+        // Verificar se pode instalar plugins
+        if (!in_array('plugin_install', $features) && in_array('install_plugins', $caps)) {
+            $allcaps['install_plugins'] = false;
+        }
+        
+        // Verificar se pode ativar plugins
+        if (!in_array('plugin_activate', $features) && in_array('activate_plugins', $caps)) {
+            $allcaps['activate_plugins'] = false;
+        }
+        
+        // Verificar se pode trocar temas
+        if (!in_array('custom_themes', $features) && in_array('switch_themes', $caps)) {
+            $allcaps['switch_themes'] = false;
+        }
+        
+        // Verificar se pode editar temas
+        if (!in_array('theme_edit', $features) && in_array('edit_themes', $caps)) {
+            $allcaps['edit_themes'] = false;
+        }
+        
+        return $allcaps;
+    }
+    
+    /**
+     * Configurar dashboard de uso
+     */
+    public function setup_usage_dashboard() {
+        if (!$this->is_managed_site()) {
+            return;
+        }
+        
+        wp_add_dashboard_widget(
+            'mkp_usage_stats',
+            'Uso do Plano',
+            array($this, 'display_usage_dashboard_widget')
+        );
+    }
+    
+    /**
+     * Exibir widget de uso no dashboard
+     */
+    public function display_usage_dashboard_widget() {
+        $limits = $this->get_site_limits();
+        $usage = $this->get_current_usage();
+        
+        ?>
+        <div class="mkp-usage-widget">
+            <style>
+            .mkp-usage-item {
+                margin: 10px 0;
+                padding: 10px;
+                background: #f9f9f9;
+                border-radius: 4px;
+            }
+            .mkp-usage-bar {
+                width: 100%;
+                height: 20px;
+                background: #e0e0e0;
+                border-radius: 10px;
+                overflow: hidden;
+                margin-top: 5px;
+            }
+            .mkp-usage-fill {
+                height: 100%;
+                background: linear-gradient(to right, #00a32a, #ffb900, #d63638);
+                transition: width 0.3s ease;
+            }
+            .mkp-usage-text {
+                font-size: 12px;
+                margin-top: 5px;
+            }
+            </style>
+            
+            <!-- Páginas/Posts -->
+            <div class="mkp-usage-item">
+                <strong>Páginas e Posts</strong>
+                <?php if ($limits['page_limit'] > 0): ?>
+                    <div class="mkp-usage-bar">
+                        <?php $percentage = min(($usage['pages'] / $limits['page_limit']) * 100, 100); ?>
+                        <div class="mkp-usage-fill" style="width: <?php echo $percentage; ?>%"></div>
+                    </div>
+                    <div class="mkp-usage-text">
+                        <?php echo $usage['pages']; ?> de <?php echo $limits['page_limit']; ?> (<?php echo round($percentage, 1); ?>%)
+                    </div>
+                <?php else: ?>
+                    <div class="mkp-usage-text">Ilimitado (<?php echo $usage['pages']; ?> criadas)</div>
+                <?php endif; ?>
+            </div>
+            
+            <!-- Armazenamento -->
+            <div class="mkp-usage-item">
+                <strong>Armazenamento</strong>
+                <?php if ($limits['storage_limit'] > 0): ?>
+                    <div class="mkp-usage-bar">
+                        <?php $percentage = min(($usage['storage'] / ($limits['storage_limit'] * 1024 * 1024)) * 100, 100); ?>
+                        <div class="mkp-usage-fill" style="width: <?php echo $percentage; ?>%"></div>
+                    </div>
+                    <div class="mkp-usage-text">
+                        <?php echo size_format($usage['storage']); ?> de <?php echo $limits['storage_limit']; ?> MB (<?php echo round($percentage, 1); ?>%)
+                    </div>
+                <?php else: ?>
+                    <div class="mkp-usage-text">Ilimitado (<?php echo size_format($usage['storage']); ?> usado)</div>
+                <?php endif; ?>
+            </div>
+            
+            <!-- Usuários -->
+            <div class="mkp-usage-item">
+                <strong>Usuários</strong>
+                <?php if ($limits['user_limit'] > 0): ?>
+                    <div class="mkp-usage-bar">
+                        <?php $percentage = min(($usage['users'] / $limits['user_limit']) * 100, 100); ?>
+                        <div class="mkp-usage-fill" style="width: <?php echo $percentage; ?>%"></div>
+                    </div>
+                    <div class="mkp-usage-text">
+                        <?php echo $usage['users']; ?> de <?php echo $limits['user_limit']; ?> (<?php echo round($percentage, 1); ?>%)
+                    </div>
+                <?php else: ?>
+                    <div class="mkp-usage-text">Ilimitado (<?php echo $usage['users']; ?> usuários)</div>
+                <?php endif; ?>
+            </div>
+            
+            <!-- Status da Assinatura -->
+            <div class="mkp-usage-item">
+                <strong>Status da Assinatura</strong>
+                <?php
+                $subscription_status = $this->get_subscription_status();
+                $status_colors = array(
+                    'active' => '#00a32a',
+                    'suspended' => '#ffb900',
+                    'cancelled' => '#d63638'
+                );
+                $color = isset($status_colors[$subscription_status]) ? $status_colors[$subscription_status] : '#666';
+                ?>
+                <div style="color: <?php echo $color; ?>; font-weight: bold;">
+                    <?php echo ucfirst($subscription_status); ?>
+                </div>
+            </div>
+        </div>
+        <?php
+    }
+    
+    /**
+     * Exibir avisos de limite
+     */
+    public function display_limit_warnings() {
+        if (!$this->is_managed_site()) {
+            return;
+        }
+        
+        // Verificar se houve excesso de limite
+        if (isset($_GET['mkp_limit_exceeded'])) {
+            $limit_type = sanitize_text_field($_GET['mkp_limit_exceeded']);
+            
+            switch ($limit_type) {
+                case 'pages':
+                    echo '<div class="notice notice-error"><p><strong>Limite excedido:</strong> Você atingiu o limite de páginas do seu plano. A página foi salva como rascunho.</p></div>';
+                    break;
+                case 'storage':
+                    echo '<div class="notice notice-error"><p><strong>Limite excedido:</strong> Você atingiu o limite de armazenamento do seu plano.</p></div>';
+                    break;
+                case 'users':
+                    echo '<div class="notice notice-error"><p><strong>Limite excedido:</strong> Você atingiu o limite de usuários do seu plano.</p></div>';
+                    break;
+            }
+        }
+        
+        // Verificar avisos de proximidade do limite
+        $limits = $this->get_site_limits();
+        $usage = $this->get_current_usage();
+        
+        // Aviso de páginas próximo do limite (90%)
+        if ($limits['page_limit'] > 0) {
+            $page_percentage = ($usage['pages'] / $limits['page_limit']) * 100;
+            if ($page_percentage >= 90) {
+                echo '<div class="notice notice-warning"><p><strong>Aviso:</strong> Você está próximo do limite de páginas (' . $usage['pages'] . '/' . $limits['page_limit'] . ').</p></div>';
+            }
+        }
+        
+        // Aviso de armazenamento próximo do limite (90%)
+        if ($limits['storage_limit'] > 0) {
+            $storage_percentage = ($usage['storage'] / ($limits['storage_limit'] * 1024 * 1024)) * 100;
+            if ($storage_percentage >= 90) {
+                echo '<div class="notice notice-warning"><p><strong>Aviso:</strong> Você está próximo do limite de armazenamento (' . size_format($usage['storage']) . '/' . $limits['storage_limit'] . ' MB).</p></div>';
+            }
+        }
+    }
+    
+    /**
+     * Verificar se é um site gerenciado pelo plugin
+     */
+    private function is_managed_site($blog_id = null) {
+        if ($blog_id === null) {
+            $blog_id = get_current_blog_id();
+        }
+        
+        $subscription_id = get_site_meta($blog_id, '_mkp_subscription_id', true);
+        return !empty($subscription_id);
+    }
+    
+    /**
+     * Obter limites do site
+     */
+    private function get_site_limits($blog_id = null) {
+        if ($blog_id === null) {
+            $blog_id = get_current_blog_id();
+        }
+        
+        $plan_details = get_site_meta($blog_id, '_mkp_plan_details', true);
+        
+        $defaults = array(
+            'page_limit' => 10,
+            'storage_limit' => 1024, // MB
+            'user_limit' => 5,
+            'features' => array()
         );
         
-        return $usage;
+        return wp_parse_args($plan_details, $defaults);
+    }
+    
+    /**
+     * Obter ID da assinatura do site
+     */
+    private function get_site_subscription_id($blog_id = null) {
+        if ($blog_id === null) {
+            $blog_id = get_current_blog_id();
+        }
+        
+        return get_site_meta($blog_id, '_mkp_subscription_id', true);
+    }
+    
+    /**
+     * Contar conteúdo publicado
+     */
+    private function count_published_content() {
+        $counts = wp_count_posts('page');
+        $page_count = isset($counts->publish) ? $counts->publish : 0;
+        
+        $counts = wp_count_posts('post');
+        $post_count = isset($counts->publish) ? $counts->publish : 0;
+        
+        return $page_count + $post_count;
+    }
+    
+    /**
+     * Obter uso atual de armazenamento
+     */
+    private function get_current_storage_usage() {
+        $upload_dir = wp_upload_dir();
+        $storage_used = 0;
+        
+        if (is_dir($upload_dir['basedir'])) {
+            $storage_used = $this->get_directory_size($upload_dir['basedir']);
+        }
+        
+        return $storage_used;
+    }
+    
+    /**
+     * Calcular tamanho de diretório
+     */
+    private function get_directory_size($directory) {
+        $size = 0;
+        
+        if (is_dir($directory)) {
+            foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($directory)) as $file) {
+                if ($file->isFile()) {
+                    $size += $file->getSize();
+                }
+            }
+        }
+        
+        return $size;
+    }
+    
+    /**
+     * Obter uso atual de todos os recursos
+     */
+    private function get_current_usage() {
+        return array(
+            'pages' => $this->count_published_content(),
+            'storage' => $this->get_current_storage_usage(),
+            'users' => count_users()['total_users']
+        );
+    }
+    
+    /**
+     * Atualizar estatísticas de uso
+     */
+    private function update_usage_stats() {
+        $usage = $this->get_current_usage();
+        update_option('_mkp_current_usage', $usage);
+        update_option('_mkp_usage_last_updated', current_time('mysql'));
+    }
+    
+    /**
+     * Obter status da assinatura
+     */
+    private function get_subscription_status() {
+        $subscription_id = $this->get_site_subscription_id();
+        
+        if (!$subscription_id) {
+            return 'unknown';
+        }
+        
+        if (function_exists('wcs_get_subscription')) {
+            $subscription = wcs_get_subscription($subscription_id);
+            if ($subscription) {
+                return $subscription->get_status();
+            }
+        }
+        
+        return 'unknown';
     }
 }
-
-// Hook para atualizar contagem após exclusão
-add_action('mkp_update_page_count_after_deletion', function($site_id) {
-    switch_to_blog($site_id);
-    $page_count = wp_count_posts('page');
-    $current_pages = intval($page_count->publish);
-    
-    global $wpdb;
-    $table = $wpdb->base_prefix . 'mkp_subdomain_config';
-    
-    $wpdb->update(
-        $table,
-        array('current_pages' => $current_pages, 'updated_at' => current_time('mysql')),
-        array('site_id' => $site_id),
-        array('%d', '%s'),
-        array('%d')
-    );
-    
-    restore_current_blog();
-});
