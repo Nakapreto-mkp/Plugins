@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 /**
  * Plugin Name: MKP Multisite WooCommerce Integrator
  * Plugin URI: https://github.com/Nakapreto-mkp/Plugins
