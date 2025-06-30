@@ -1,1 +1,410 @@
-asdfad
+﻿/**
+ * Estilos administrativos do MKP Multisite WooCommerce Integrator
+ */
+
+/* Cards do Dashboard */
+.mkp-dashboard-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 20px;
+    margin: 20px 0;
+}
+
+.mkp-card {
+    background: #fff;
+    border: 1px solid #ccd0d4;
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.mkp-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+.mkp-card-icon {
+    font-size: 2em;
+    margin-bottom: 10px;
+}
+
+.mkp-card-content h3 {
+    font-size: 2.5em;
+    margin: 0;
+    color: #2271b1;
+    font-weight: 600;
+}
+
+.mkp-card-content p {
+    margin: 5px 0 0;
+    color: #646970;
+    font-size: 14px;
+}
+
+/* Layout do Dashboard */
+.mkp-dashboard-row {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 20px;
+    margin: 20px 0;
+}
+
+.mkp-dashboard-col-8,
+.mkp-dashboard-col-6,
+.mkp-dashboard-col-4 {
+    background: #fff;
+    border: 1px solid #ccd0d4;
+    border-radius: 8px;
+}
+
+.mkp-dashboard-col-6 {
+    grid-column: span 1;
+}
+
+/* Widgets */
+.mkp-widget {
+    background: #fff;
+    border: 1px solid #ccd0d4;
+    border-radius: 8px;
+    margin: 20px 0;
+}
+
+.mkp-widget h2 {
+    margin: 0;
+    padding: 15px 20px;
+    border-bottom: 1px solid #ccd0d4;
+    background: #f6f7f7;
+    border-radius: 8px 8px 0 0;
+    font-size: 16px;
+}
+
+.mkp-widget .inside {
+    padding: 20px;
+}
+
+/* Ações Rápidas */
+.mkp-quick-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 20px;
+}
+
+.mkp-quick-actions .button {
+    text-align: left;
+    padding: 12px 15px;
+    border-radius: 6px;
+    text-decoration: none;
+}
+
+/* Status Badges */
+.status-badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    text-transform: uppercase;
+}
+
+.status-active {
+    background: #d4edda;
+    color: #155724;
+}
+
+.status-on-hold,
+.status-suspended {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.status-cancelled,
+.status-expired,
+.status-archived {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+/* Action Badges */
+.action-badge {
+    display: inline-block;
+    padding: 3px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.action-site_created {
+    background: #d1ecf1;
+    color: #0c5460;
+}
+
+.action-site_activated {
+    background: #d4edda;
+    color: #155724;
+}
+
+.action-site_suspended {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.action-site_archived {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+.action-page_limit_exceeded {
+    background: #f5c6cb;
+    color: #721c24;
+}
+
+/* Progress Bars */
+.progress-bar {
+    width: 100%;
+    height: 8px;
+    background: #e0e0e0;
+    border-radius: 4px;
+    overflow: hidden;
+    margin: 5px 0;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #28a745, #20c997);
+    transition: width 0.3s ease;
+}
+
+.mkp-progress-bar {
+    width: 100%;
+    height: 20px;
+    background: #e0e0e0;
+    border-radius: 10px;
+    overflow: hidden;
+    margin: 10px 0;
+}
+
+.mkp-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #007cba, #2271b1);
+    transition: width 0.3s ease;
+}
+
+/* Tabelas */
+.wp-list-table .mkp-manage-site {
+    margin: 2px;
+}
+
+.mkp-info-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.mkp-info-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid #eee;
+}
+
+.mkp-info-table td:first-child {
+    width: 40%;
+    background: #f9f9f9;
+}
+
+/* Uso de Recursos */
+.mkp-resource-usage {
+    padding: 20px;
+}
+
+.resource-item {
+    margin-bottom: 15px;
+}
+
+.resource-item label {
+    display: block;
+    font-weight: 500;
+    margin-bottom: 5px;
+}
+
+.resource-value {
+    font-size: 18px;
+    font-weight: 600;
+    color: #2271b1;
+}
+
+/* Sistema de Alertas */
+#system-alerts .notice {
+    margin: 10px 0;
+}
+
+/* Tooltips */
+.mkp-tooltip {
+    position: absolute;
+    background: #333;
+    color: #fff;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    z-index: 9999;
+    max-width: 250px;
+    display: none;
+}
+
+.mkp-tooltip::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    margin-left: -5px;
+    border-width: 5px;
+    border-style: solid;
+    border-color: #333 transparent transparent transparent;
+}
+
+/* Formulários */
+.form-table th {
+    font-weight: 600;
+}
+
+.form-table input.error,
+.form-table select.error,
+.form-table textarea.error {
+    border-color: #dc3232;
+    box-shadow: 0 0 2px rgba(220, 50, 50, 0.3);
+}
+
+/* Configurações Avançadas */
+.mkp-advanced-options {
+    display: none;
+    margin-top: 20px;
+    padding: 20px;
+    background: #f9f9f9;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+.mkp-advanced-settings {
+    cursor: pointer;
+    color: #2271b1;
+    text-decoration: underline;
+}
+
+/* Responsividade */
+@media (max-width: 768px) {
+    .mkp-dashboard-cards {
+        grid-template-columns: 1fr;
+    }
+    
+    .mkp-dashboard-row {
+        grid-template-columns: 1fr;
+    }
+    
+    .mkp-quick-actions {
+        flex-direction: column;
+    }
+    
+    .wp-list-table {
+        font-size: 14px;
+    }
+    
+    .wp-list-table th,
+    .wp-list-table td {
+        padding: 8px 4px;
+    }
+}
+
+/* Modo escuro (experimental) */
+@media (prefers-color-scheme: dark) {
+    .mkp-card {
+        background: #1e1e1e;
+        border-color: #444;
+        color: #fff;
+    }
+    
+    .mkp-widget {
+        background: #1e1e1e;
+        border-color: #444;
+        color: #fff;
+    }
+    
+    .mkp-widget h2 {
+        background: #2a2a2a;
+        color: #fff;
+    }
+}
+
+/* Animações */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideIn {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(0); }
+}
+
+.notice {
+    animation: fadeIn 0.3s ease;
+}
+
+.mkp-card {
+    animation: slideIn 0.5s ease;
+}
+
+/* Estados de carregamento */
+.mkp-loading {
+    position: relative;
+    opacity: 0.7;
+    pointer-events: none;
+}
+
+.mkp-loading::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 20px;
+    height: 20px;
+    margin: -10px 0 0 -10px;
+    border: 2px solid #f3f3f3;
+    border-top: 2px solid #3498db;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Estilos específicos para diferentes seções */
+.mkp-sites-page .tablenav {
+    margin-bottom: 20px;
+}
+
+.mkp-logs-page .wp-list-table {
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+}
+
+.mkp-settings-page .form-table {
+    margin-top: 20px;
+}
+
+/* Cores customizadas do tema */
+:root {
+    --mkp-primary: #2271b1;
+    --mkp-secondary: #646970;
+    --mkp-success: #28a745;
+    --mkp-warning: #ffc107;
+    --mkp-danger: #dc3545;
+    --mkp-info: #17a2b8;
+}
+
+.mkp-primary { color: var(--mkp-primary); }
+.mkp-secondary { color: var(--mkp-secondary); }
+.mkp-success { color: var(--mkp-success); }
+.mkp-warning { color: var(--mkp-warning); }
+.mkp-danger { color: var(--mkp-danger); }
+.mkp-info { color: var(--mkp-info); }
