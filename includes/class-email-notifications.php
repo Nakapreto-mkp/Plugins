@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 /**
  * Gerenciador de notificações por email
  */
