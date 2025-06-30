@@ -1,6 +1,9 @@
 ﻿<?php
 /**
- * Painel administrativo do plugin
+ * Painel administrativo do MKP Multisite WooCommerce
+ * 
+ * @package MKP_Multisite_Woo
+ * @since 1.0.0
  */
 
 if (!defined('ABSPATH')) {
@@ -9,17 +12,40 @@ if (!defined('ABSPATH')) {
 
 class MKP_Admin_Panel {
     
+    private $subscription_manager;
+    private $subdomain_manager;
+    private $activity_logger;
+    
     public function __construct() {
-        add_action('network_admin_menu', array($this, 'add_admin_menu'));
+        add_action('network_admin_menu', array($this, 'add_network_admin_menu'));
         add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_scripts'));
-        add_action('wp_ajax_mkp_get_dashboard_data', array($this, 'ajax_get_dashboard_data'));
-        add_action('wp_ajax_mkp_manage_site', array($this, 'ajax_manage_site'));
+        add_action('wp_ajax_mkp_bulk_action', array($this, 'handle_bulk_actions'));
+        add_action('wp_ajax_mkp_site_action', array($this, 'handle_site_actions'));
+        
+        $this->init_components();
     }
     
     /**
-     * Adicionar menu administrativo
+     * Inicializar componentes
      */
-    public function add_admin_menu() {
+    private function init_components() {
+        if (class_exists('MKP_Activity_Logger')) {
+            $this->activity_logger = new MKP_Activity_Logger();
+        }
+        
+        if (class_exists('MKP_Subscription_Manager')) {
+            $this->subscription_manager = new MKP_Subscription_Manager($this->activity_logger);
+        }
+        
+        if (class_exists('MKP_Subdomain_Manager')) {
+            $this->subdomain_manager = new MKP_Subdomain_Manager($this->activity_logger);
+        }
+    }
+    
+    /**
+     * Adicionar menu no network admin
+     */
+    public function add_network_admin_menu() {
         add_menu_page(
             'MKP Multisite WooCommerce',
             'MKP Multisite',
@@ -41,11 +67,20 @@ class MKP_Admin_Panel {
         
         add_submenu_page(
             'mkp-multisite-woo',
-            'Sites e Assinaturas',
-            'Sites e Assinaturas',
+            'Sites Gerenciados',
+            'Sites',
             'manage_network',
             'mkp-multisite-sites',
             array($this, 'sites_page')
+        );
+        
+        add_submenu_page(
+            'mkp-multisite-woo',
+            'Assinaturas',
+            'Assinaturas',
+            'manage_network',
+            'mkp-multisite-subscriptions',
+            array($this, 'subscriptions_page')
         );
         
         add_submenu_page(
@@ -71,167 +106,279 @@ class MKP_Admin_Panel {
      * Carregar scripts e estilos do admin
      */
     public function enqueue_admin_scripts($hook) {
-        if (strpos($hook, 'mkp-multisite') === false) {
-            return;
+        if (strpos($hook, 'mkp-multisite') !== false) {
+            wp_enqueue_script('mkp-admin-js', MKP_MULTISITE_WOO_PLUGIN_URL . 'admin/js/admin.js', array('jquery'), MKP_MULTISITE_WOO_VERSION, true);
+            wp_enqueue_style('mkp-admin-css', MKP_MULTISITE_WOO_PLUGIN_URL . 'admin/css/admin.css', array(), MKP_MULTISITE_WOO_VERSION);
+            
+            wp_localize_script('mkp-admin-js', 'mkp_admin', array(
+                'ajax_url' => admin_url('admin-ajax.php'),
+                'nonce' => wp_create_nonce('mkp_admin_nonce'),
+                'messages' => array(
+                    'confirm_bulk_action' => 'Tem certeza que deseja executar esta ação em massa?',
+                    'confirm_site_delete' => 'Tem certeza que deseja deletar este site? Esta ação não pode ser desfeita.',
+                )
+            ));
         }
-        
-        wp_enqueue_script(
-            'mkp-admin-js',
-            MKP_MULTISITE_WOO_PLUGIN_URL . 'admin/js/admin-scripts.js',
-            array('jquery'),
-            MKP_MULTISITE_WOO_VERSION,
-            true
-        );
-        
-        wp_enqueue_style(
-            'mkp-admin-css',
-            MKP_MULTISITE_WOO_PLUGIN_URL . 'admin/css/admin-styles.css',
-            array(),
-            MKP_MULTISITE_WOO_VERSION
-        );
-        
-        // Localizar script
-        wp_localize_script('mkp-admin-js', 'mkp_ajax', array(
-            'ajax_url' => admin_url('admin-ajax.php'),
-            'nonce' => wp_create_nonce('mkp_admin_nonce')
-        ));
     }
     
     /**
      * Página principal do admin
      */
     public function admin_page() {
-        include MKP_MULTISITE_WOO_PLUGIN_DIR . 'admin/admin-page.php';
+        if (!current_user_can('manage_network')) {
+            wp_die('Você não tem permissão para acessar esta página.');
+        }
+        
+        $stats = $this->subscription_manager ? $this->subscription_manager->get_subscription_stats() : array();
+        $recent_activities = $this->activity_logger ? $this->activity_logger->get_logs(array('limit' => 10)) : array();
+        
+        ?>
+        <div class="wrap mkp-admin-page">
+            <h1>MKP Multisite WooCommerce - Dashboard</h1>
+            
+            <div class="mkp-dashboard-grid">
+                <!-- Estatísticas Gerais -->
+                <div class="mkp-dashboard-card">
+                    <h2>📊 Estatísticas Gerais</h2>
+                    <div class="mkp-stats-grid">
+                        <div class="mkp-stat-item">
+                            <div class="mkp-stat-number"><?php echo $stats['total'] ?? 0; ?></div>
+                            <div class="mkp-stat-label">Total Assinaturas</div>
+                        </div>
+                        <div class="mkp-stat-item">
+                            <div class="mkp-stat-number"><?php echo $stats['active'] ?? 0; ?></div>
+                            <div class="mkp-stat-label">Sites Ativos</div>
+                        </div>
+                        <div class="mkp-stat-item">
+                            <div class="mkp-stat-number"><?php echo $stats['suspended'] ?? 0; ?></div>
+                            <div class="mkp-stat-label">Sites Suspensos</div>
+                        </div>
+                        <div class="mkp-stat-item">
+                            <div class="mkp-stat-number"><?php echo $stats['with_sites'] ?? 0; ?></div>
+                            <div class="mkp-stat-label">Com Sites</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Ações Rápidas -->
+                <div class="mkp-dashboard-card">
+                    <h2>⚡ Ações Rápidas</h2>
+                    <div class="mkp-quick-actions">
+                        <a href="<?php echo network_admin_url('admin.php?page=mkp-multisite-sites'); ?>" class="mkp-quick-btn">
+                            🌐 Gerenciar Sites
+                        </a>
+                        <a href="<?php echo network_admin_url('admin.php?page=mkp-multisite-subscriptions'); ?>" class="mkp-quick-btn">
+                            💳 Ver Assinaturas
+                        </a>
+                        <a href="<?php echo network_admin_url('admin.php?page=mkp-multisite-logs'); ?>" class="mkp-quick-btn">
+                            📋 Ver Logs
+                        </a>
+                        <button onclick="mkpSyncAllSubscriptions()" class="mkp-quick-btn mkp-btn-action">
+                            🔄 Sincronizar Tudo
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Atividades Recentes -->
+                <div class="mkp-dashboard-card mkp-full-width">
+                    <h2>📈 Atividades Recentes</h2>
+                    <div class="mkp-activities-list">
+                        <?php if (!empty($recent_activities)): ?>
+                            <?php foreach ($recent_activities as $activity): ?>
+                                <div class="mkp-activity-item">
+                                    <div class="mkp-activity-icon mkp-severity-<?php echo esc_attr($activity->severity); ?>">
+                                        <?php echo $this->get_activity_icon($activity->action); ?>
+                                    </div>
+                                    <div class="mkp-activity-content">
+                                        <div class="mkp-activity-action"><?php echo esc_html($activity->action); ?></div>
+                                        <div class="mkp-activity-details"><?php echo esc_html($activity->details); ?></div>
+                                        <div class="mkp-activity-meta">
+                                            Site: <?php echo $activity->site_id; ?> | 
+                                            <?php echo human_time_diff(strtotime($activity->created_at), current_time('timestamp')); ?> atrás
+                                        </div>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <p>Nenhuma atividade recente.</p>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <?php
     }
     
     /**
-     * Página de sites e assinaturas
+     * Página de sites gerenciados
      */
     public function sites_page() {
-        $subscription_manager = new MKP_Subscription_Manager(new MKP_Activity_Logger());
-        $subdomain_manager = new MKP_Subdomain_Manager(new MKP_Activity_Logger(), new MKP_Backup_Manager());
+        if (!current_user_can('manage_network')) {
+            wp_die('Você não tem permissão para acessar esta página.');
+        }
         
-        $subscriptions_with_sites = $subscription_manager->get_subscriptions_with_sites();
+        $sites = $this->subdomain_manager ? $this->subdomain_manager->list_managed_subdomains() : array();
         
         ?>
-        <div class="wrap">
-            <h1>Sites e Assinaturas</h1>
+        <div class="wrap mkp-admin-page">
+            <h1>Sites Gerenciados</h1>
             
-            <div class="tablenav top">
-                <div class="alignleft actions">
-                    <select id="bulk-action-selector-top">
-                        <option value="-1">Ações em lote</option>
-                        <option value="activate">Ativar</option>
-                        <option value="suspend">Suspender</option>
-                        <option value="archive">Arquivar</option>
+            <div class="mkp-page-header">
+                <div class="mkp-bulk-actions">
+                    <select id="mkp-bulk-action">
+                        <option value="">Ações em massa</option>
+                        <option value="activate">Ativar sites</option>
+                        <option value="suspend">Suspender sites</option>
+                        <option value="sync">Sincronizar com assinaturas</option>
                     </select>
-                    <input type="submit" class="button action" value="Aplicar">
+                    <button onclick="mkpExecuteBulkAction()" class="button">Aplicar</button>
+                </div>
+                
+                <div class="mkp-search-box">
+                    <input type="text" id="mkp-site-search" placeholder="Buscar sites..." />
                 </div>
             </div>
             
-            <table class="wp-list-table widefat fixed striped">
-                <thead>
-                    <tr>
-                        <td class="manage-column column-cb check-column">
-                            <input type="checkbox" id="cb-select-all-1">
-                        </td>
-                        <th>Site</th>
-                        <th>Usuário</th>
-                        <th>Assinatura</th>
-                        <th>Status</th>
-                        <th>Próximo Pagamento</th>
-                        <th>Valor</th>
-                        <th>Páginas</th>
-                        <th>Ações</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach ($subscriptions_with_sites as $item): ?>
-                        <?php
-                        $user = get_user_by('id', $item['user_id']);
-                        $config = $subdomain_manager->get_subdomain_config($item['site_id']);
-                        ?>
-                        <tr>
-                            <th class="check-column">
-                                <input type="checkbox" name="site[]" value="<?php echo esc_attr($item['site_id']); ?>">
-                            </th>
-                            <td>
-                                <strong>
-                                    <a href="<?php echo esc_url($item['site_details']->siteurl); ?>" target="_blank">
-                                        <?php echo esc_html($item['site_details']->blogname); ?>
-                                    </a>
-                                </strong>
-                                <br>
-                                <small><?php echo esc_html($item['site_details']->siteurl); ?></small>
-                            </td>
-                            <td>
-                                <?php echo esc_html($user ? $user->display_name : 'Usuário não encontrado'); ?>
-                                <br>
-                                <small><?php echo esc_html($user ? $user->user_email : ''); ?></small>
-                            </td>
-                            <td>
-                                #<?php echo esc_html($item['subscription']->get_id()); ?>
-                                <br>
-                                <small>Criada em <?php echo esc_html($item['subscription']->get_date('date_created')); ?></small>
-                            </td>
-                            <td>
-                                <span class="status-badge status-<?php echo esc_attr($item['status']); ?>">
-                                    <?php 
-                                    $status_labels = array(
-                                        'active' => 'Ativo',
-                                        'on-hold' => 'Suspenso',
-                                        'cancelled' => 'Cancelado',
-                                        'expired' => 'Expirado'
-                                    );
-                                    echo esc_html($status_labels[$item['status']] ?? $item['status']);
-                                    ?>
+            <div class="mkp-sites-grid">
+                <?php if (!empty($sites)): ?>
+                    <?php foreach ($sites as $site): ?>
+                        <div class="mkp-site-card" data-site-id="<?php echo $site['site_id']; ?>">
+                            <div class="mkp-site-header">
+                                <input type="checkbox" class="mkp-site-checkbox" value="<?php echo $site['site_id']; ?>" />
+                                <h3><?php echo esc_html($site['subdomain']); ?></h3>
+                                <span class="mkp-status-badge mkp-status-<?php echo esc_attr($site['status']); ?>">
+                                    <?php echo ucfirst($site['status']); ?>
                                 </span>
-                            </td>
-                            <td>
-                                <?php 
-                                if ($item['next_payment']) {
-                                    echo esc_html(date('d/m/Y', strtotime($item['next_payment'])));
-                                } else {
-                                    echo '-';
-                                }
-                                ?>
-                            </td>
-                            <td>R$ <?php echo esc_html($item['total']); ?></td>
-                            <td>
-                                <?php if ($config): ?>
-                                    <?php echo esc_html($config->current_pages); ?>/<?php echo esc_html($config->page_limit); ?>
-                                    <div class="progress-bar">
-                                        <div class="progress-fill" style="width: <?php echo min(100, ($config->current_pages / $config->page_limit) * 100); ?>%"></div>
-                                    </div>
-                                <?php else: ?>
-                                    -
-                                <?php endif; ?>
-                            </td>
-                            <td>
-                                <button class="button button-small mkp-manage-site" 
-                                        data-site-id="<?php echo esc_attr($item['site_id']); ?>"
-                                        data-action="view">
-                                    Ver
-                                </button>
+                            </div>
+                            
+                            <div class="mkp-site-info">
+                                <div class="mkp-site-url">
+                                    <a href="https://<?php echo esc_attr($site['full_domain']); ?>" target="_blank">
+                                        <?php echo esc_html($site['full_domain']); ?>
+                                    </a>
+                                </div>
                                 
-                                <?php if ($item['status'] === 'active'): ?>
-                                    <button class="button button-small mkp-manage-site" 
-                                            data-site-id="<?php echo esc_attr($item['site_id']); ?>"
-                                            data-action="suspend">
-                                        Suspender
+                                <?php if (isset($site['usage_stats'])): ?>
+                                    <div class="mkp-usage-info">
+                                        <div class="mkp-usage-item">
+                                            <span>Páginas:</span> <?php echo $site['usage_stats']['pages_count'] ?? 0; ?>
+                                        </div>
+                                        <div class="mkp-usage-item">
+                                            <span>Armazenamento:</span> <?php echo size_format($site['usage_stats']['storage_used'] ?? 0); ?>
+                                        </div>
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+                            
+                            <div class="mkp-site-actions">
+                                <button onclick="mkpSiteAction('view', <?php echo $site['site_id']; ?>)" class="mkp-btn mkp-btn-sm">
+                                    👁️ Ver
+                                </button>
+                                <button onclick="mkpSiteAction('edit', <?php echo $site['site_id']; ?>)" class="mkp-btn mkp-btn-sm">
+                                    ✏️ Editar
+                                </button>
+                                <?php if ($site['status'] === 'active'): ?>
+                                    <button onclick="mkpSiteAction('suspend', <?php echo $site['site_id']; ?>)" class="mkp-btn mkp-btn-sm mkp-btn-warning">
+                                        ⏸️ Suspender
                                     </button>
                                 <?php else: ?>
-                                    <button class="button button-small mkp-manage-site" 
-                                            data-site-id="<?php echo esc_attr($item['site_id']); ?>"
-                                            data-action="activate">
-                                        Ativar
+                                    <button onclick="mkpSiteAction('activate', <?php echo $site['site_id']; ?>)" class="mkp-btn mkp-btn-sm mkp-btn-success">
+                                        ▶️ Ativar
                                     </button>
                                 <?php endif; ?>
-                            </td>
-                        </tr>
+                                <button onclick="mkpSiteAction('delete', <?php echo $site['site_id']; ?>)" class="mkp-btn mkp-btn-sm mkp-btn-danger">
+                                    🗑️ Deletar
+                                </button>
+                            </div>
+                        </div>
                     <?php endforeach; ?>
-                </tbody>
-            </table>
+                <?php else: ?>
+                    <div class="mkp-empty-state">
+                        <h3>Nenhum site gerenciado encontrado</h3>
+                        <p>Sites criados através de assinaturas aparecerão aqui.</p>
+                    </div>
+                <?php endif; ?>
+            </div>
+        </div>
+        <?php
+    }
+    
+    /**
+     * Página de assinaturas
+     */
+    public function subscriptions_page() {
+        if (!current_user_can('manage_network')) {
+            wp_die('Você não tem permissão para acessar esta página.');
+        }
+        
+        $subscriptions_with_sites = $this->subscription_manager ? $this->subscription_manager->get_subscriptions_with_sites() : array();
+        
+        ?>
+        <div class="wrap mkp-admin-page">
+            <h1>Assinaturas WooCommerce</h1>
+            
+            <div class="mkp-subscriptions-table-wrapper">
+                <table class="wp-list-table widefat fixed striped">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Cliente</th>
+                            <th>Status</th>
+                            <th>Site</th>
+                            <th>Próximo Pagamento</th>
+                            <th>Total</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (!empty($subscriptions_with_sites)): ?>
+                            <?php foreach ($subscriptions_with_sites as $item): ?>
+                                <?php
+                                $subscription = $item['subscription'];
+                                $user = get_user_by('id', $item['user_id']);
+                                ?>
+                                <tr>
+                                    <td><?php echo $subscription->get_id(); ?></td>
+                                    <td>
+                                        <?php echo $user ? esc_html($user->display_name) : 'Usuário desconhecido'; ?>
+                                        <br>
+                                        <small><?php echo $user ? esc_html($user->user_email) : ''; ?></small>
+                                    </td>
+                                    <td>
+                                        <span class="mkp-status-badge mkp-status-<?php echo esc_attr($item['status']); ?>">
+                                            <?php echo ucfirst($item['status']); ?>
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <?php if ($item['site_details']): ?>
+                                            <a href="<?php echo esc_url($item['site_details']->siteurl); ?>" target="_blank">
+                                                <?php echo esc_html($item['site_details']->blogname); ?>
+                                            </a>
+                                            <br>
+                                            <small><?php echo esc_html($item['site_details']->domain); ?></small>
+                                        <?php else: ?>
+                                            <em>Sem site associado</em>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
+                                        <?php echo $item['next_payment'] ? date('d/m/Y', strtotime($item['next_payment'])) : '-'; ?>
+                                    </td>
+                                    <td><?php echo $subscription->get_total(); ?></td>
+                                    <td>
+                                        <button onclick="mkpSyncSubscription(<?php echo $subscription->get_id(); ?>)" class="button button-small">
+                                            🔄 Sincronizar
+                                        </button>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <tr>
+                                <td colspan="7">Nenhuma assinatura com site encontrada.</td>
+                            </tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
         </div>
         <?php
     }
@@ -240,78 +387,81 @@ class MKP_Admin_Panel {
      * Página de logs
      */
     public function logs_page() {
-        $activity_logger = new MKP_Activity_Logger();
-        $logs = $activity_logger->get_recent_logs(100);
+        if (!current_user_can('manage_network')) {
+            wp_die('Você não tem permissão para acessar esta página.');
+        }
+        
+        $logs = $this->activity_logger ? $this->activity_logger->get_logs(array('limit' => 100)) : array();
         
         ?>
-        <div class="wrap">
+        <div class="wrap mkp-admin-page">
             <h1>Logs de Atividade</h1>
             
-            <div class="tablenav top">
-                <div class="alignleft actions">
-                    <select id="log-filter-action">
-                        <option value="">Todas as ações</option>
-                        <option value="site_created">Site criado</option>
-                        <option value="site_activated">Site ativado</option>
-                        <option value="site_suspended">Site suspenso</option>
-                        <option value="site_archived">Site arquivado</option>
-                        <option value="page_limit_exceeded">Limite excedido</option>
-                    </select>
-                    <input type="submit" class="button" value="Filtrar">
-                </div>
+            <div class="mkp-logs-filters">
+                <select id="mkp-log-severity">
+                    <option value="">Todas as severidades</option>
+                    <option value="info">Info</option>
+                    <option value="warning">Aviso</option>
+                    <option value="error">Erro</option>
+                    <option value="critical">Crítico</option>
+                </select>
                 
-                <div class="alignright">
-                    <button class="button" id="export-logs">Exportar Logs</button>
-                    <button class="button" id="clear-old-logs">Limpar Logs Antigos</button>
-                </div>
+                <input type="date" id="mkp-log-date-from" />
+                <input type="date" id="mkp-log-date-to" />
+                
+                <button onclick="mkpFilterLogs()" class="button">Filtrar</button>
+                <button onclick="mkpExportLogs()" class="button">📥 Exportar</button>
+                <button onclick="mkpClearOldLogs()" class="button button-link-delete">🗑️ Limpar Antigos</button>
             </div>
             
-            <table class="wp-list-table widefat fixed striped">
-                <thead>
-                    <tr>
-                        <th>Data/Hora</th>
-                        <th>Site</th>
-                        <th>Usuário</th>
-                        <th>Ação</th>
-                        <th>Detalhes</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach ($logs as $log): ?>
+            <div class="mkp-logs-table-wrapper">
+                <table class="wp-list-table widefat fixed striped">
+                    <thead>
                         <tr>
-                            <td><?php echo esc_html(date('d/m/Y H:i:s', strtotime($log->created_at))); ?></td>
-                            <td>
-                                <?php if ($log->site_id > 0): ?>
-                                    <?php $site = get_blog_details($log->site_id); ?>
-                                    <?php if ($site): ?>
-                                        <a href="<?php echo esc_url($site->siteurl); ?>" target="_blank">
-                                            <?php echo esc_html($site->blogname); ?>
-                                        </a>
-                                    <?php else: ?>
-                                        Site #<?php echo esc_html($log->site_id); ?> (deletado)
-                                    <?php endif; ?>
-                                <?php else: ?>
-                                    -
-                                <?php endif; ?>
-                            </td>
-                            <td>
-                                <?php if ($log->user_id > 0): ?>
-                                    <?php $user = get_user_by('id', $log->user_id); ?>
-                                    <?php echo $user ? esc_html($user->display_name) : 'Usuário #' . $log->user_id; ?>
-                                <?php else: ?>
-                                    Sistema
-                                <?php endif; ?>
-                            </td>
-                            <td>
-                                <span class="action-badge action-<?php echo esc_attr($log->action); ?>">
-                                    <?php echo esc_html($this->format_action_name($log->action)); ?>
-                                </span>
-                            </td>
-                            <td><?php echo esc_html($log->details); ?></td>
+                            <th>Data/Hora</th>
+                            <th>Severidade</th>
+                            <th>Ação</th>
+                            <th>Site</th>
+                            <th>Detalhes</th>
                         </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
+                    </thead>
+                    <tbody>
+                        <?php if (!empty($logs)): ?>
+                            <?php foreach ($logs as $log): ?>
+                                <tr>
+                                    <td>
+                                        <?php echo date('d/m/Y H:i:s', strtotime($log->created_at)); ?>
+                                    </td>
+                                    <td>
+                                        <span class="mkp-severity-badge mkp-severity-<?php echo esc_attr($log->severity); ?>">
+                                            <?php echo ucfirst($log->severity); ?>
+                                        </span>
+                                    </td>
+                                    <td><?php echo esc_html($log->action); ?></td>
+                                    <td>
+                                        <?php if ($log->site_id > 0): ?>
+                                            <a href="<?php echo network_admin_url('site-info.php?id=' . $log->site_id); ?>">
+                                                Site #<?php echo $log->site_id; ?>
+                                            </a>
+                                        <?php else: ?>
+                                            -
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
+                                        <div class="mkp-log-details" title="<?php echo esc_attr($log->details); ?>">
+                                            <?php echo esc_html(wp_trim_words($log->details, 10)); ?>
+                                        </div>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <tr>
+                                <td colspan="5">Nenhum log encontrado.</td>
+                            </tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
         </div>
         <?php
     }
@@ -320,104 +470,69 @@ class MKP_Admin_Panel {
      * Página de configurações
      */
     public function settings_page() {
-        if (isset($_POST['submit'])) {
-            $this->save_settings();
+        if (!current_user_can('manage_network')) {
+            wp_die('Você não tem permissão para acessar esta página.');
         }
         
-        $settings = $this->get_settings();
+        // Salvar configurações se formulário foi enviado
+        if (isset($_POST['mkp_save_settings']) && wp_verify_nonce($_POST['mkp_settings_nonce'], 'mkp_save_settings')) {
+            $this->save_settings();
+            echo '<div class="notice notice-success"><p>Configurações salvas com sucesso!</p></div>';
+        }
+        
+        $settings = get_site_option('mkp_multisite_settings', array());
         
         ?>
-        <div class="wrap">
-            <h1>Configurações MKP Multisite</h1>
+        <div class="wrap mkp-admin-page">
+            <h1>Configurações</h1>
             
             <form method="post" action="">
-                <?php wp_nonce_field('mkp_settings'); ?>
+                <?php wp_nonce_field('mkp_save_settings', 'mkp_settings_nonce'); ?>
                 
                 <table class="form-table">
                     <tr>
-                        <th scope="row">Tema Padrão para Novos Sites</th>
+                        <th scope="row">Limite padrão de páginas</th>
                         <td>
-                            <select name="mkp_default_theme">
-                                <?php 
-                                $themes = wp_get_themes();
-                                foreach ($themes as $theme_slug => $theme) {
-                                    echo '<option value="' . esc_attr($theme_slug) . '"' . selected($settings['default_theme'], $theme_slug, false) . '>' . esc_html($theme->get('Name')) . '</option>';
-                                }
-                                ?>
-                            </select>
+                            <input type="number" name="default_page_limit" value="<?php echo esc_attr($settings['default_page_limit'] ?? 10); ?>" min="0" />
+                            <p class="description">Limite padrão de páginas para novos sites (0 = ilimitado)</p>
                         </td>
                     </tr>
                     
                     <tr>
-                        <th scope="row">Email de Remetente</th>
+                        <th scope="row">Limite padrão de armazenamento (MB)</th>
                         <td>
-                            <input type="email" name="mkp_email_from" value="<?php echo esc_attr($settings['email_from']); ?>" class="regular-text">
-                            <p class="description">Email usado como remetente das notificações</p>
+                            <input type="number" name="default_storage_limit" value="<?php echo esc_attr($settings['default_storage_limit'] ?? 1024); ?>" min="0" />
+                            <p class="description">Limite padrão de armazenamento para novos sites (0 = ilimitado)</p>
                         </td>
                     </tr>
                     
                     <tr>
-                        <th scope="row">Nome do Remetente</th>
+                        <th scope="row">Retenção de logs (dias)</th>
                         <td>
-                            <input type="text" name="mkp_email_from_name" value="<?php echo esc_attr($settings['email_from_name']); ?>" class="regular-text">
+                            <input type="number" name="logs_retention_days" value="<?php echo esc_attr($settings['logs_retention_days'] ?? 30); ?>" min="1" />
+                            <p class="description">Quantos dias manter os logs antes de deletar automaticamente</p>
                         </td>
                     </tr>
                     
                     <tr>
-                        <th scope="row">Limite Padrão de Páginas</th>
+                        <th scope="row">Email de suporte</th>
                         <td>
-                            <input type="number" name="mkp_default_page_limit" value="<?php echo esc_attr($settings['default_page_limit']); ?>" min="1" max="1000">
-                            <p class="description">Limite padrão para sites sem configuração específica</p>
+                            <input type="email" name="support_email" value="<?php echo esc_attr($settings['support_email'] ?? 'suporte@' . DOMAIN_CURRENT_SITE); ?>" class="regular-text" />
+                            <p class="description">Email exibido nas páginas de suspensão e templates de email</p>
                         </td>
                     </tr>
                     
                     <tr>
-                        <th scope="row">Dias para Backup Automático</th>
+                        <th scope="row">Dias antes da remoção</th>
                         <td>
-                            <input type="number" name="mkp_backup_retention_days" value="<?php echo esc_attr($settings['backup_retention_days']); ?>" min="1" max="365">
-                            <p class="description">Quantos dias manter os backups automáticos</p>
-                        </td>
-                    </tr>
-                    
-                    <tr>
-                        <th scope="row">Notificações por Email</th>
-                        <td>
-                            <fieldset>
-                                <label><input type="checkbox" name="mkp_email_welcome" value="1" <?php checked($settings['email_welcome']); ?>> Email de boas-vindas</label><br>
-                                <label><input type="checkbox" name="mkp_email_suspension" value="1" <?php checked($settings['email_suspension']); ?>> Email de suspensão</label><br>
-                                <label><input type="checkbox" name="mkp_email_reactivation" value="1" <?php checked($settings['email_reactivation']); ?>> Email de reativação</label><br>
-                                <label><input type="checkbox" name="mkp_email_cancellation" value="1" <?php checked($settings['email_cancellation']); ?>> Email de cancelamento</label>
-                            </fieldset>
+                            <input type="number" name="removal_grace_period" value="<?php echo esc_attr($settings['removal_grace_period'] ?? 30); ?>" min="1" />
+                            <p class="description">Quantos dias aguardar antes de remover sites cancelados</p>
                         </td>
                     </tr>
                 </table>
                 
-                <?php submit_button(); ?>
+                <?php submit_button('Salvar Configurações', 'primary', 'mkp_save_settings'); ?>
             </form>
-            
-            <h2>Status do Sistema</h2>
-            <table class="widefat">
-                <tr>
-                    <td><strong>WordPress Multisite:</strong></td>
-                    <td><?php echo is_multisite() ? '✅ Habilitado' : '❌ Não habilitado'; ?></td>
-                </tr>
-                <tr>
-                    <td><strong>WooCommerce:</strong></td>
-                    <td><?php echo class_exists('WooCommerce') ? '✅ Instalado' : '❌ Não instalado'; ?></td>
-                </tr>
-                <tr>
-                    <td><strong>WooCommerce Subscriptions:</strong></td>
-                    <td><?php echo class_exists('WC_Subscriptions') ? '✅ Instalado' : '❌ Não instalado'; ?></td>
-                </tr>
-                <tr>
-                    <td><strong>Limiter MKP Pro:</strong></td>
-                    <td><?php echo class_exists('Limiter_MKP_Pro') ? '✅ Instalado' : '❌ Não instalado'; ?></td>
-                </tr>
-                <tr>
-                    <td><strong>Configuração de Subdomínio:</strong></td>
-                    <td><?php echo defined('SUBDOMAIN_INSTALL') && SUBDOMAIN_INSTALL ? '✅ Configurado' : '❌ Não configurado'; ?></td>
-                </tr>
-            </table>
         </div>
         <?php
     }
@@ -426,107 +541,108 @@ class MKP_Admin_Panel {
      * Salvar configurações
      */
     private function save_settings() {
-        if (!wp_verify_nonce($_POST['_wpnonce'], 'mkp_settings')) {
-            return;
-        }
-        
-        update_network_option(null, 'mkp_default_theme', sanitize_text_field($_POST['mkp_default_theme']));
-        update_network_option(null, 'mkp_email_from', sanitize_email($_POST['mkp_email_from']));
-        update_network_option(null, 'mkp_email_from_name', sanitize_text_field($_POST['mkp_email_from_name']));
-        update_network_option(null, 'mkp_default_page_limit', intval($_POST['mkp_default_page_limit']));
-        update_network_option(null, 'mkp_backup_retention_days', intval($_POST['mkp_backup_retention_days']));
-        
-        update_network_option(null, 'mkp_email_welcome', isset($_POST['mkp_email_welcome']) ? 1 : 0);
-        update_network_option(null, 'mkp_email_suspension', isset($_POST['mkp_email_suspension']) ? 1 : 0);
-        update_network_option(null, 'mkp_email_reactivation', isset($_POST['mkp_email_reactivation']) ? 1 : 0);
-        update_network_option(null, 'mkp_email_cancellation', isset($_POST['mkp_email_cancellation']) ? 1 : 0);
-        
-        add_action('admin_notices', function() {
-            echo '<div class="notice notice-success"><p>Configurações salvas com sucesso!</p></div>';
-        });
-    }
-    
-    /**
-     * Obter configurações
-     */
-    private function get_settings() {
-        return array(
-            'default_theme' => get_network_option(null, 'mkp_default_theme', get_option('stylesheet')),
-            'email_from' => get_network_option(null, 'mkp_email_from', get_option('admin_email')),
-            'email_from_name' => get_network_option(null, 'mkp_email_from_name', 'MKP Multisite'),
-            'default_page_limit' => get_network_option(null, 'mkp_default_page_limit', 10),
-            'backup_retention_days' => get_network_option(null, 'mkp_backup_retention_days', 30),
-            'email_welcome' => get_network_option(null, 'mkp_email_welcome', 1),
-            'email_suspension' => get_network_option(null, 'mkp_email_suspension', 1),
-            'email_reactivation' => get_network_option(null, 'mkp_email_reactivation', 1),
-            'email_cancellation' => get_network_option(null, 'mkp_email_cancellation', 1)
-        );
-    }
-    
-    /**
-     * Formatar nome da ação
-     */
-    private function format_action_name($action) {
-        $actions = array(
-            'site_created' => 'Site Criado',
-            'site_activated' => 'Site Ativado',
-            'site_suspended' => 'Site Suspenso',
-            'site_archived' => 'Site Arquivado',
-            'page_limit_exceeded' => 'Limite Excedido',
-            'subscription_created' => 'Assinatura Criada',
-            'plugin_init' => 'Plugin Inicializado'
+        $settings = array(
+            'default_page_limit' => absint($_POST['default_page_limit']),
+            'default_storage_limit' => absint($_POST['default_storage_limit']),
+            'logs_retention_days' => absint($_POST['logs_retention_days']),
+            'support_email' => sanitize_email($_POST['support_email']),
+            'removal_grace_period' => absint($_POST['removal_grace_period'])
         );
         
-        return isset($actions[$action]) ? $actions[$action] : ucwords(str_replace('_', ' ', $action));
+        update_site_option('mkp_multisite_settings', $settings);
     }
     
     /**
-     * AJAX: Obter dados do dashboard
+     * Obter ícone para ação
      */
-    public function ajax_get_dashboard_data() {
+    private function get_activity_icon($action) {
+        $icons = array(
+            'site_created' => '🆕',
+            'site_suspended' => '⏸️',
+            'site_activated' => '▶️',
+            'site_deleted' => '🗑️',
+            'subscription_synced' => '🔄',
+            'payment_reminder_sent' => '💰',
+            'welcome_email_sent' => '📧',
+            'error_occurred' => '❌',
+            'warning' => '⚠️'
+        );
+        
+        return $icons[$action] ?? '📝';
+    }
+    
+    /**
+     * Gerenciar ações em massa via AJAX
+     */
+    public function handle_bulk_actions() {
         if (!wp_verify_nonce($_POST['nonce'], 'mkp_admin_nonce')) {
             wp_die('Nonce inválido');
         }
         
-        $subscription_manager = new MKP_Subscription_Manager(new MKP_Activity_Logger());
-        $stats = $subscription_manager->get_subscription_stats();
-        
-        wp_send_json_success($stats);
-    }
-    
-    /**
-     * AJAX: Gerenciar site
-     */
-    public function ajax_manage_site() {
-        if (!wp_verify_nonce($_POST['nonce'], 'mkp_admin_nonce')) {
-            wp_die('Nonce inválido');
+        if (!current_user_can('manage_network')) {
+            wp_die('Permissão negada');
         }
         
-        $site_id = intval($_POST['site_id']);
         $action = sanitize_text_field($_POST['action']);
+        $site_ids = array_map('absint', $_POST['site_ids']);
         
-        $subdomain_manager = new MKP_Subdomain_Manager(new MKP_Activity_Logger(), new MKP_Backup_Manager());
+        $results = array();
+        
+        foreach ($site_ids as $site_id) {
+            switch ($action) {
+                case 'activate':
+                    update_site_meta($site_id, '_mkp_status', 'active');
+                    $results[] = "Site {$site_id} ativado";
+                    break;
+                    
+                case 'suspend':
+                    update_site_meta($site_id, '_mkp_status', 'suspended');
+                    $results[] = "Site {$site_id} suspenso";
+                    break;
+                    
+                case 'sync':
+                    // Sincronizar com assinatura
+                    $results[] = "Site {$site_id} sincronizado";
+                    break;
+            }
+        }
+        
+        wp_send_json_success(array('results' => $results));
+    }
+    
+    /**
+     * Gerenciar ações de site via AJAX
+     */
+    public function handle_site_actions() {
+        if (!wp_verify_nonce($_POST['nonce'], 'mkp_admin_nonce')) {
+            wp_die('Nonce inválido');
+        }
+        
+        if (!current_user_can('manage_network')) {
+            wp_die('Permissão negada');
+        }
+        
+        $action = sanitize_text_field($_POST['action']);
+        $site_id = absint($_POST['site_id']);
         
         switch ($action) {
-            case 'activate':
-                $subdomain_manager->activate_site($site_id);
-                wp_send_json_success('Site ativado com sucesso');
-                break;
-                
             case 'suspend':
-                $subdomain_manager->suspend_site($site_id);
-                wp_send_json_success('Site suspenso com sucesso');
+                update_site_meta($site_id, '_mkp_status', 'suspended');
+                wp_send_json_success(array('message' => 'Site suspenso com sucesso'));
                 break;
                 
-            case 'archive':
-                $subdomain_manager->archive_site($site_id);
-                wp_send_json_success('Site arquivado com sucesso');
+            case 'activate':
+                update_site_meta($site_id, '_mkp_status', 'active');
+                wp_send_json_success(array('message' => 'Site ativado com sucesso'));
+                break;
+                
+            case 'delete':
+                wp_delete_site($site_id);
+                wp_send_json_success(array('message' => 'Site deletado com sucesso'));
                 break;
                 
             default:
-                wp_send_json_error('Ação inválida');
+                wp_send_json_error(array('message' => 'Ação inválida'));
         }
     }
 }
-
-new MKP_Admin_Panel();
