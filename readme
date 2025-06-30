@@ -1,0 +1,89 @@
+# MKP Multisite WooCommerce Integrator
+
+## Overview
+
+The MKP Multisite WooCommerce Integrator is a WordPress plugin designed to manage and integrate multiple WooCommerce sites within a multisite network. The plugin provides administrative functionality for synchronizing subscriptions, managing individual sites, and monitoring operations across the network.
+
+## System Architecture
+
+### Frontend Architecture
+- **Technology**: WordPress admin interface with custom CSS and JavaScript
+- **Styling**: Custom CSS grid-based dashboard with responsive card layouts
+- **Interactivity**: jQuery-based JavaScript for admin functionality
+
+### Backend Architecture
+- **Platform**: WordPress Multisite environment
+- **Framework**: WordPress plugin architecture
+- **Language**: PHP (implied from WordPress context)
+
+### User Interface Design
+- Grid-based dashboard with responsive cards
+- Hover effects and smooth transitions for better user experience
+- Clean, modern administrative interface following WordPress design patterns
+
+## Key Components
+
+### Administrative Dashboard
+- **Dashboard Cards**: Grid-based layout displaying key metrics and statistics
+- **Responsive Design**: Auto-fitting grid columns with minimum 200px width
+- **Interactive Elements**: Hover effects with elevation and shadow changes
+
+### Site Management System
+- Individual site management controls
+- Bulk action capabilities for multiple sites
+- Site-specific action buttons with data attributes for identification
+
+### Data Synchronization
+- Subscription synchronization across sites
+- Periodic dashboard data updates (5-minute intervals)
+- Real-time action management for site operations
+
+### Logging and Monitoring
+- Log export functionality
+- Old log cleanup capabilities
+- Continuous monitoring with automatic updates
+
+## Data Flow
+
+1. **Dashboard Updates**: Automatic data refresh every 5 minutes
+2. **Site Management**: Individual site actions triggered via data attributes
+3. **Bulk Operations**: Mass actions across multiple sites
+4. **Synchronization**: Subscription data sync between sites
+5. **Logging**: Export and cleanup operations for system logs
+
+## External Dependencies
+
+### Core Dependencies
+- **WordPress**: Multisite installation required
+- **WooCommerce**: E-commerce functionality
+- **jQuery**: JavaScript interactions and AJAX calls
+
+### Browser Requirements
+- Modern CSS Grid support
+- ES5+ JavaScript compatibility
+- CSS3 transitions and transforms
+
+## Deployment Strategy
+
+### WordPress Plugin Structure
+- Standard WordPress plugin architecture
+- Admin-only functionality (no public-facing components)
+- Multisite network activation capability
+
+### File Organization
+- `/admin/css/` - Administrative styling
+- `/admin/js/` - Administrative JavaScript functionality
+- Follows WordPress plugin development standards
+
+### Performance Considerations
+- Lightweight CSS with efficient grid layouts
+- Minimal JavaScript footprint with jQuery dependency
+- Periodic updates to prevent excessive server load
+
+## Changelog
+
+- June 29, 2025. Initial setup
+
+## User Preferences
+
+Preferred communication style: Simple, everyday language.
